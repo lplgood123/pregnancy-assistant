@@ -1,6 +1,7 @@
 services:
   - type: web
     name: pregnancy-ai-backend
+    plan: free
     runtime: python
     rootDir: ai_backend
     buildCommand: pip install -r requirements.txt
