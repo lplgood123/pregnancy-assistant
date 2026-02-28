@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: pregnancy-ai-backend
+    runtime: python
+    rootDir: ai_backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app -w 2 -b 0.0.0.0:$PORT --timeout 120
+    healthCheckPath: /healthz
+    autoDeploy: true
+    envVars:
+      - key: MINIMAX_API_KEY
+        sync: false
+      - key: MINIMAX_BASE_URL
+        value: https://api.minimax.io/v1
+      - key: MINIMAX_MODEL
+        value: MiniMax-M2.5
+      - key: MINIMAX_TIMEOUT_SECONDS
+        value: "60"
+      - key: AI_BACKEND_TOKEN
+        sync: false
+      - key: APP_TIMEZONE
+        value: Asia/Shanghai

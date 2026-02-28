@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>孕期飞书提醒助手</title>
+  <style>
+    :root {
+      --bg: #f7f8fb;
+      --card: #ffffff;
+      --text: #1f2937;
+      --sub: #6b7280;
+      --primary: #0f766e;
+      --line: #e5e7eb;
+    }
+    body {
+      margin: 0;
+      background: linear-gradient(180deg, #eefaf8 0%, var(--bg) 30%);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue", sans-serif;
+    }
+    .wrap {
+      max-width: 880px;
+      margin: 24px auto 40px;
+      padding: 0 16px;
+    }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 16px;
+      margin-bottom: 14px;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.04);
+    }
+    h1 { margin: 0 0 6px; font-size: 24px; }
+    h2 { margin: 0 0 12px; font-size: 18px; }
+    .sub { color: var(--sub); margin: 0; }
+    .msg {
+      background: #ecfdf5;
+      border: 1px solid #a7f3d0;
+      color: #065f46;
+      border-radius: 10px;
+      padding: 10px 12px;
+      margin-bottom: 12px;
+    }
+    label { display: block; margin: 10px 0 6px; font-size: 14px; color: var(--sub); }
+    input, textarea {
+      width: 100%;
+      box-sizing: border-box;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 10px 12px;
+      font-size: 15px;
+      background: #fff;
+    }
+    textarea { min-height: 72px; resize: vertical; }
+    .row {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }
+    .row3 {
+      display: grid;
+      grid-template-columns: 1fr 2fr 120px;
+      gap: 10px;
+      align-items: end;
+    }
+    button {
+      border: 0;
+      border-radius: 10px;
+      background: var(--primary);
+      color: #fff;
+      padding: 10px 12px;
+      font-size: 14px;
+      cursor: pointer;
+    }
+    .btn-muted {
+      background: #475569;
+    }
+    .btn-danger {
+      background: #b91c1c;
+    }
+    .item {
+      border: 1px dashed #cbd5e1;
+      border-radius: 10px;
+      padding: 12px;
+      margin-top: 10px;
+    }
+    .item-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 6px;
+    }
+    .actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    @media (max-width: 760px) {
+      .row, .row3 {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <h1>孕期飞书提醒助手</h1>
+      <p class="sub">录入一次信息，每天自动给家人发飞书提醒。</p>
+    </div>
+
+    {% if msg %}
+      <div class="msg">{{ msg }}</div>
+    {% endif %}
+
+    <div class="card">
+      <h2>1) 基本信息</h2>
+      <p class="sub">{{ info_text }}</p>
+      <form method="post" action="/save-profile">
+        <div class="row">
+          <div>
+            <label>称呼（例如：小丽）</label>
+            <input name="mother_name" value="{{ profile['mother_name'] or '' }}" placeholder="家人称呼">
+          </div>
+          <div>
+            <label>时区（默认 Asia/Shanghai）</label>
+            <input name="timezone" value="{{ profile['timezone'] or 'Asia/Shanghai' }}" placeholder="Asia/Shanghai">
+          </div>
+        </div>
+        <div class="row">
+          <div>
+            <label>末次月经日期</label>
+            <input type="date" name="last_period_date" value="{{ profile['last_period_date'] or '' }}">
+          </div>
+          <div>
+            <label>预产期</label>
+            <input type="date" name="due_date" value="{{ profile['due_date'] or '' }}">
+          </div>
+        </div>
+        <div style="margin-top: 10px;">
+          <button type="submit">保存基本信息</button>
+        </div>
+      </form>
+    </div>
+
+    <div class="card">
+      <h2>2) 飞书机器人</h2>
+      <form method="post" action="/save-config">
+        <label>Webhook URL</label>
+        <input name="webhook_url" value="{{ config['webhook_url'] or '' }}" placeholder="https://open.feishu.cn/open-apis/bot/v2/hook/xxx">
+        <div style="margin-top: 10px;">
+          <button type="submit">保存机器人配置</button>
+        </div>
+      </form>
+    </div>
+
+    <div class="card">
+      <h2>3) 每日提醒列表</h2>
+      <form method="post" action="/add-reminder">
+        <div class="row3">
+          <div>
+            <label>时间</label>
+            <input type="time" name="send_time" value="09:00" required>
+          </div>
+          <div>
+            <label>事项标题</label>
+            <input name="title" placeholder="例如：早晨补充叶酸" required>
+          </div>
+          <div>
+            <button type="submit">新增提醒</button>
+          </div>
+        </div>
+        <label>提醒内容</label>
+        <textarea name="content" placeholder="例如：早餐后补充叶酸，喝一杯温水，记录今天体重。" required></textarea>
+      </form>
+
+      {% for r in reminders %}
+        <div class="item">
+          <div class="item-head">
+            <strong>{{ r['send_time'] }} - {{ r['title'] }}</strong>
+            <span>{{ '已启用' if r['enabled'] else '已停用' }}</span>
+          </div>
+          <div class="sub">{{ r['content'] }}</div>
+          <div class="actions" style="margin-top: 8px;">
+            <form method="post" action="/toggle-reminder/{{ r['id'] }}">
+              <button class="btn-muted" type="submit">{{ '停用' if r['enabled'] else '启用' }}</button>
+            </form>
+            <form method="post" action="/send-now/{{ r['id'] }}">
+              <button type="submit">立即测试发送</button>
+            </form>
+            <form method="post" action="/delete-reminder/{{ r['id'] }}">
+              <button class="btn-danger" type="submit">删除</button>
+            </form>
+          </div>
+        </div>
+      {% else %}
+        <p class="sub">还没有提醒，先新增一条。</p>
+      {% endfor %}
+    </div>
+  </div>
+</body>
+</html>

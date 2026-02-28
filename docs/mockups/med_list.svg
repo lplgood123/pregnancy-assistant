@@ -1,0 +1,49 @@
+<svg width="390" height="844" viewBox="0 0 390 844" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#F9EFE7"/>
+      <stop offset="100%" stop-color="#F2EEE9"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="6" stdDeviation="12" flood-color="#C9B7A6" flood-opacity="0.25"/>
+    </filter>
+  </defs>
+
+  <rect width="390" height="844" fill="url(#bg)"/>
+
+  <!-- Header -->
+  <text x="24" y="60" font-family="'Noto Sans SC','PingFang SC','Helvetica Neue',sans-serif" font-size="18" font-weight="700" fill="#3B2F2A">用药清单</text>
+  <text x="24" y="80" font-family="'Noto Sans SC','PingFang SC','Helvetica Neue',sans-serif" font-size="12" fill="#8B7A70">整理你所有的补剂与用药</text>
+
+  <!-- Summary pill -->
+  <rect x="24" y="94" width="120" height="26" rx="10" fill="#F1E9E3"/>
+  <text x="36" y="112" font-family="'Noto Sans SC','PingFang SC','Helvetica Neue',sans-serif" font-size="11" fill="#7A6A61">今日需服用 3 项</text>
+
+  <!-- List cards -->
+  <g filter="url(#shadow)">
+    <rect x="20" y="136" width="350" height="110" rx="16" fill="#FFFFFF"/>
+  </g>
+  <text x="36" y="162" font-family="'Noto Sans SC','PingFang SC','Helvetica Neue',sans-serif" font-size="13" fill="#8B7A70">每日</text>
+  <text x="36" y="188" font-family="'Noto Sans SC','PingFang SC','Helvetica Neue',sans-serif" font-size="15" font-weight="600" fill="#3B2F2A">钙片</text>
+  <text x="36" y="210" font-family="'Noto Sans SC','PingFang SC','Helvetica Neue',sans-serif" font-size="12" fill="#7A6A61">晚饭后 20 分钟 · 1 片</text>
+
+  <g filter="url(#shadow)">
+    <rect x="20" y="262" width="350" height="110" rx="16" fill="#FFFFFF"/>
+  </g>
+  <text x="36" y="288" font-family="'Noto Sans SC','PingFang SC','Helvetica Neue',sans-serif" font-size="13" fill="#8B7A70">每日</text>
+  <text x="36" y="314" font-family="'Noto Sans SC','PingFang SC','Helvetica Neue',sans-serif" font-size="15" font-weight="600" fill="#3B2F2A">叶酸</text>
+  <text x="36" y="336" font-family="'Noto Sans SC','PingFang SC','Helvetica Neue',sans-serif" font-size="12" fill="#7A6A61">早餐后 20 分钟 · 1 片</text>
+
+  <g filter="url(#shadow)">
+    <rect x="20" y="388" width="350" height="110" rx="16" fill="#FFFFFF"/>
+  </g>
+  <text x="36" y="414" font-family="'Noto Sans SC','PingFang SC','Helvetica Neue',sans-serif" font-size="13" fill="#8B7A70">每周</text>
+  <text x="36" y="440" font-family="'Noto Sans SC','PingFang SC','Helvetica Neue',sans-serif" font-size="15" font-weight="600" fill="#3B2F2A">DHA</text>
+  <text x="36" y="462" font-family="'Noto Sans SC','PingFang SC','Helvetica Neue',sans-serif" font-size="12" fill="#7A6A61">周三 晚饭后 · 1 粒</text>
+
+  <!-- CTA -->
+  <g filter="url(#shadow)">
+    <rect x="20" y="748" width="350" height="52" rx="16" fill="#F07A6A"/>
+  </g>
+  <text x="132" y="780" font-family="'Noto Sans SC','PingFang SC','Helvetica Neue',sans-serif" font-size="14" fill="#FFFFFF">新增用药/补剂</text>
+</svg>

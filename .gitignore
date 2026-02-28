@@ -1,0 +1,8 @@
+.DS_Store
+*.xcuserstate
+*.xcworkspace/xcuserdata/
+*.xcodeproj/xcuserdata/
+ai_backend/.env
+ai_backend/.venv/
+__pycache__/
+*.pyc
