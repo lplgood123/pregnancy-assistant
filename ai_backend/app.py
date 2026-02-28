@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import re
 from datetime import datetime
@@ -55,6 +56,65 @@ def normalize_plain_text(raw: str) -> str:
         return text
     tail = "。".join(parts[-2:])
     return tail if tail.endswith("。") else f"{tail}。"
+
+
+def strip_reasoning_artifacts(raw: str) -> str:
+    text = raw.strip()
+
+    # Prefer content after </think> if present.
+    close_match = re.search(r"(?i)</think>", text)
+    if close_match:
+        tail = text[close_match.end() :].strip()
+        if tail:
+            text = tail
+
+    # Remove complete think blocks and truncated starts.
+    text = re.sub(r"(?is)<think\b[^>]*>.*?</think>", "", text).strip()
+    if re.search(r"(?i)<think", text):
+        text = re.split(r"(?i)<think", text)[0].strip()
+
+    # Unwrap fenced code block if model returns ```json ... ```
+    fenced = re.search(r"(?is)```(?:json|text)?\s*(.*?)\s*```", text)
+    if fenced:
+        candidate = fenced.group(1).strip()
+        if candidate:
+            text = candidate
+
+    return text.strip()
+
+
+def normalize_chat_json(raw: str) -> str:
+    cleaned = strip_reasoning_artifacts(raw)
+    candidate = cleaned
+
+    if not (candidate.startswith("{") and candidate.endswith("}")):
+        start = candidate.find("{")
+        end = candidate.rfind("}")
+        if start != -1 and end != -1 and end > start:
+            candidate = candidate[start : end + 1].strip()
+
+    try:
+        obj = json.loads(candidate)
+        if isinstance(obj, dict):
+            normalized = {
+                "intent": str(obj.get("intent", "unknown")),
+                "slots": obj.get("slots") if isinstance(obj.get("slots"), dict) else {},
+                "need_clarify": bool(obj.get("need_clarify", False)),
+                "clarify_question": str(obj.get("clarify_question", "")),
+                "assistant_reply": str(obj.get("assistant_reply", "")),
+            }
+            return json.dumps(normalized, ensure_ascii=False)
+    except Exception:
+        pass
+
+    fallback = {
+        "intent": "unknown",
+        "slots": {},
+        "need_clarify": False,
+        "clarify_question": "",
+        "assistant_reply": cleaned or "我在呢，你可以告诉我要记录什么。",
+    }
+    return json.dumps(fallback, ensure_ascii=False)
 
 
 class BackendError(Exception):
@@ -251,7 +311,7 @@ def ai_chat():
     except BackendError as err:
         return jsonify({"error": err.message}), err.status_code
 
-    return jsonify({"content": text})
+    return jsonify({"content": normalize_chat_json(text)})
 
 
 @app.post("/api/ai/home-summary")
