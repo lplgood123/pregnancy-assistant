@@ -249,6 +249,11 @@ def call_minimax_chat(messages: list[dict], model: str | None, temperature: floa
         )
 
         if not (200 <= response.status_code < 300):
+            if response.status_code == 401:
+                raise BackendError(
+                    "Minimax API key is invalid. Please update MINIMAX_API_KEY on backend.",
+                    401,
+                )
             if attempt < max_attempts and minimax_status_retryable(response.status_code):
                 if retry_backoff_seconds > 0:
                     time.sleep(retry_backoff_seconds * attempt)
