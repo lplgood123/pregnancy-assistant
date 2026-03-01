@@ -25,8 +25,14 @@ Stateless backend proxy for the iOS app.
 4. In environment variables, set:
 - `MINIMAX_API_KEY` = your Minimax key
 - `AI_BACKEND_TOKEN` = random long secret (recommended)
-5. Deploy and wait until service is live.
-6. Open `https://<your-service>.onrender.com/healthz`, expect `{"ok":true,...}`.
+5. Recommended timeout/retry settings (for Render free plan stability):
+- `MINIMAX_CONNECT_TIMEOUT_SECONDS=8`
+- `MINIMAX_READ_TIMEOUT_SECONDS=35`
+- `MINIMAX_MAX_ATTEMPTS=2`
+- `MINIMAX_RETRY_BACKOFF_SECONDS=0.8`
+6. Keep Gunicorn worker count at 1 on free plan to reduce memory pressure / stalls.
+7. Deploy and wait until service is live.
+8. Open `https://<your-service>.onrender.com/healthz`, expect `{"ok":true,...}`.
 
 After deploy, your backend URL is:
 - `https://<your-service>.onrender.com`

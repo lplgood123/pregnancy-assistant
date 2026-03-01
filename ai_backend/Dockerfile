@@ -12,4 +12,4 @@ COPY app.py ./
 
 EXPOSE 8787
 
-CMD ["sh", "-c", "gunicorn app:app -w 2 -b 0.0.0.0:${PORT:-8787} --timeout 120"]
+CMD ["sh", "-c", "gunicorn app:app -w 1 --threads 4 -b 0.0.0.0:${PORT:-8787} --timeout 75 --graceful-timeout 30 --keep-alive 5"]

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -124,6 +125,30 @@ class BackendError(Exception):
         self.status_code = status_code
 
 
+def env_float(key: str, default: float) -> float:
+    raw = env_trim(key, str(default))
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
+def env_int(key: str, default: int) -> int:
+    raw = env_trim(key, str(default))
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
+def minimax_status_retryable(status_code: int) -> bool:
+    return status_code in {429, 500, 502, 503, 504}
+
+
+def minimax_exception_retryable(exc: Exception) -> bool:
+    return isinstance(exc, (requests.Timeout, requests.ConnectionError))
+
+
 def extract_text_from_provider(payload: dict) -> str:
     choices = payload.get("choices")
     if isinstance(choices, list) and choices:
@@ -175,7 +200,13 @@ def call_minimax_chat(messages: list[dict], model: str | None, temperature: floa
     base_url = env_trim("MINIMAX_BASE_URL", "https://api.minimax.io/v1")
     endpoint = f"{base_url.rstrip('/')}/chat/completions"
     effective_model = model or env_trim("MINIMAX_MODEL", "MiniMax-M2.5")
-    timeout_seconds = float(env_trim("MINIMAX_TIMEOUT_SECONDS", "60") or "60")
+    connect_timeout_seconds = env_float("MINIMAX_CONNECT_TIMEOUT_SECONDS", 8.0)
+    read_timeout_seconds = env_float("MINIMAX_READ_TIMEOUT_SECONDS", 35.0)
+    # Backward compatibility: if only legacy total timeout exists, cap read timeout by it.
+    legacy_total_timeout = env_float("MINIMAX_TIMEOUT_SECONDS", 60.0)
+    read_timeout_seconds = min(read_timeout_seconds, max(10.0, legacy_total_timeout))
+    max_attempts = max(1, env_int("MINIMAX_MAX_ATTEMPTS", 2))
+    retry_backoff_seconds = max(0.0, env_float("MINIMAX_RETRY_BACKOFF_SECONDS", 0.8))
 
     headers = {
         "Content-Type": "application/json",
@@ -187,26 +218,68 @@ def call_minimax_chat(messages: list[dict], model: str | None, temperature: floa
         "temperature": temperature,
     }
 
-    try:
-        response = requests.post(endpoint, headers=headers, json=body, timeout=timeout_seconds)
-    except requests.RequestException as exc:
-        raise BackendError(f"Failed to reach Minimax: {exc}", 502) from exc
+    last_error: BackendError | None = None
 
-    if not (200 <= response.status_code < 300):
-        raise BackendError(
-            f"Minimax API error ({response.status_code}): {response.text[:800]}",
-            502,
+    for attempt in range(1, max_attempts + 1):
+        started_at = time.monotonic()
+        try:
+            response = requests.post(
+                endpoint,
+                headers=headers,
+                json=body,
+                timeout=(connect_timeout_seconds, read_timeout_seconds),
+            )
+        except requests.RequestException as exc:
+            elapsed = int((time.monotonic() - started_at) * 1000)
+            print(
+                f"[minimax] attempt={attempt}/{max_attempts} exception={type(exc).__name__} "
+                f"elapsedMs={elapsed}"
+            )
+            if attempt < max_attempts and minimax_exception_retryable(exc):
+                if retry_backoff_seconds > 0:
+                    time.sleep(retry_backoff_seconds * attempt)
+                continue
+            status_code = 504 if isinstance(exc, requests.Timeout) else 502
+            reason = "timeout" if isinstance(exc, requests.Timeout) else "connection_error"
+            raise BackendError(f"Failed to reach Minimax ({reason}): {exc}", status_code) from exc
+
+        elapsed = int((time.monotonic() - started_at) * 1000)
+        print(
+            f"[minimax] attempt={attempt}/{max_attempts} status={response.status_code} elapsedMs={elapsed}"
         )
 
-    try:
-        payload = response.json()
-    except ValueError as exc:
-        raise BackendError("Minimax returned non-JSON response.", 502) from exc
+        if not (200 <= response.status_code < 300):
+            if attempt < max_attempts and minimax_status_retryable(response.status_code):
+                if retry_backoff_seconds > 0:
+                    time.sleep(retry_backoff_seconds * attempt)
+                continue
+            raise BackendError(
+                f"Minimax API error ({response.status_code}): {response.text[:800]}",
+                502,
+            )
 
-    text = extract_text_from_provider(payload)
-    if not text:
-        raise BackendError("Minimax returned empty content.", 502)
-    return text
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            last_error = BackendError("Minimax returned non-JSON response.", 502)
+            if attempt < max_attempts:
+                if retry_backoff_seconds > 0:
+                    time.sleep(retry_backoff_seconds * attempt)
+                continue
+            raise last_error from exc
+
+        text = extract_text_from_provider(payload)
+        if text:
+            return text
+
+        last_error = BackendError("Minimax returned empty content.", 502)
+        if attempt < max_attempts:
+            if retry_backoff_seconds > 0:
+                time.sleep(retry_backoff_seconds * attempt)
+            continue
+        raise last_error
+
+    raise last_error or BackendError("Minimax call failed.", 502)
 
 
 def build_chat_system_prompt(context: str) -> str:
@@ -269,6 +342,11 @@ HOME_SUMMARY_SYSTEM_PROMPT = """
 
 @app.get("/healthz")
 def healthz():
+    return jsonify({"ok": True, "service": "pregnancy-ai-backend"})
+
+
+@app.get("/")
+def root():
     return jsonify({"ok": True, "service": "pregnancy-ai-backend"})
 
 

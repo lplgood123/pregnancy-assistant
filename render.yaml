@@ -5,7 +5,7 @@ services:
     runtime: python
     rootDir: ai_backend
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn app:app -w 2 -b 0.0.0.0:$PORT --timeout 120
+    startCommand: gunicorn app:app -w 1 --threads 4 -b 0.0.0.0:$PORT --timeout 75 --graceful-timeout 30 --keep-alive 5
     healthCheckPath: /healthz
     autoDeploy: true
     envVars:
@@ -16,7 +16,15 @@ services:
       - key: MINIMAX_MODEL
         value: MiniMax-M2.5
       - key: MINIMAX_TIMEOUT_SECONDS
-        value: "60"
+        value: "45"
+      - key: MINIMAX_CONNECT_TIMEOUT_SECONDS
+        value: "8"
+      - key: MINIMAX_READ_TIMEOUT_SECONDS
+        value: "35"
+      - key: MINIMAX_MAX_ATTEMPTS
+        value: "2"
+      - key: MINIMAX_RETRY_BACKOFF_SECONDS
+        value: "0.8"
       - key: AI_BACKEND_TOKEN
         sync: false
       - key: APP_TIMEZONE
