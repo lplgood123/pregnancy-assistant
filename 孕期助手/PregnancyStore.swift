@@ -662,7 +662,7 @@ final class PregnancyStore: ObservableObject {
     private let calendar = Calendar.current
     private let stateKey = "pregnancy_assistant_app_state_v2"
     private let onboardingSchemaVersion = 13
-    private var bannerNonce = UUID()
+    private var bannerNonce: UUID?
     private let symptomOptionsCatalog: [SymptomOption] = [
         SymptomOption(id: "spotting", title: "阴道流血/褐色分泌物", detail: "出现时建议及时联系医生"),
         SymptomOption(id: "pain", title: "腹痛加重", detail: "持续或明显加重需就医"),
