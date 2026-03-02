@@ -64,16 +64,16 @@ struct ContentView: View {
             tabItemButton(tab: .profile, title: "我的", icon: "person.crop.circle.fill")
         }
         .frame(height: AppLayout.mainTabBarHeight)
-        .padding(.bottom, AppLayout.tabBarBottomSafePadding)
         .frame(maxWidth: .infinity)
         .background {
             ZStack {
-                Color.white.opacity(0.7)
+                Color.white.opacity(0.66)
                     .background(.ultraThinMaterial)
                     .ignoresSafeArea(edges: .bottom)
             }
             .shadow(color: Color.black.opacity(0.08), radius: 16, x: 0, y: -4)
         }
+        .zIndex(50)
         .overlay(alignment: .top) {
             // 顶部高光线
             LinearGradient(
@@ -88,36 +88,25 @@ struct ContentView: View {
     private func tabItemButton(tab: MainTab, title: String, icon: String) -> some View {
         let selected = selectedTab == tab
         return Button {
-            withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
+            withAnimation(reduceMotion ? nil : .easeOut(duration: 0.18)) {
                 selectedTab = tab
             }
         } label: {
-            VStack(spacing: 4) {
+            VStack(spacing: 2) {
                 Image(systemName: icon)
-                    .font(.system(size: 24, weight: .medium))
-                    .symbolEffect(.bounce, value: selected)
-                    .foregroundStyle(
-                        selected
-                        ? LinearGradient(
-                            colors: [AppTheme.actionPrimary, AppTheme.accentBrand],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                        : LinearGradient(
-                            colors: [AppTheme.textSecondary, AppTheme.textSecondary],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                    )
+                    .font(.system(size: 19, weight: .semibold))
+                    .foregroundStyle(selected ? AppTheme.actionPrimary : AppTheme.textSecondary)
                 Text(title)
-                    .font(.system(size: 11, weight: selected ? .semibold : .regular))
+                    .font(.system(size: 10, weight: selected ? .semibold : .medium))
                     .foregroundStyle(selected ? AppTheme.actionPrimary : AppTheme.textSecondary)
             }
-            .frame(maxWidth: .infinity)
-            .frame(height: AppLayout.mainTabBarHeight)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .appTapTarget(minHeight: AppLayout.mainTabBarHeight)
+        .accessibilityLabel(title)
+        .accessibilityAddTraits(selected ? .isSelected : [])
     }
 
     private func syncRemindersIfNeeded() {

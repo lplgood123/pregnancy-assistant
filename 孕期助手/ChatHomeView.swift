@@ -292,10 +292,10 @@ struct ChatHomeView: View {
             .padding(.top, tabBarVisible ? 0 : 10)
             .padding(.bottom, 8)
 
-            // TabBar 占位 — 键盘弹出时 TabBar 隐藏，不需要占位
+            // TabBar 占位 — 和记录页按钮到 TabBar 的高度一致
             if tabBarVisible {
                 Color.clear
-                    .frame(height: AppLayout.tabBarOccupiedHeight)
+                    .frame(height: AppLayout.tabBarVisibleHeight)
             }
 
             // 状态提示
