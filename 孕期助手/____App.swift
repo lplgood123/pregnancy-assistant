@@ -26,6 +26,7 @@ struct PregnancyAssistantApp: App {
                 }
             }
             .environmentObject(store)
+            .preferredColorScheme(.light)  // 强制浅色模式，Glassmorphism 设计
         }
     }
 }

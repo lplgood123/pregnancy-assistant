@@ -243,21 +243,21 @@ struct AIBackendChatService {
     }
 
     private let primaryPolicy = AIRequestPolicy(
-        requestTimeout: 16,
-        resourceTimeout: 20,
+        requestTimeout: 30,
+        resourceTimeout: 35,
         maxAttempts: 3,
-        backoffs: [0.8, 1.6],
-        maxWait: 40
+        backoffs: [1.5, 3.0],
+        maxWait: 60
     )
     private let compensationPolicy = AIRequestPolicy(
-        requestTimeout: 12,
-        resourceTimeout: 14,
-        maxAttempts: 1,
-        backoffs: [],
-        maxWait: 15
+        requestTimeout: 20,
+        resourceTimeout: 25,
+        maxAttempts: 2,
+        backoffs: [1.0],
+        maxWait: 30
     )
-    private let endToEndBudget: TimeInterval = 60
-    private let warmupTimeout: TimeInterval = 35
+    private let endToEndBudget: TimeInterval = 90
+    private let warmupTimeout: TimeInterval = 60
 
     func send(config: AIConfig, context: String, history: [StoredAIMessage], userInput: String) async throws -> String {
         try await sendWithRecovery(
@@ -829,7 +829,7 @@ struct AIAssistantView: View {
             VStack(spacing: 0) {
                 List {
                     Section("助手设置") {
-                        Text("当前通过后端统一接入 AI（建议后端使用 Minimax）；发布版可在 Info.plist 配置 AI_BACKEND_URL，调试可用 AI_BACKEND_URL / AI_BACKEND_TOKEN / AI_BACKEND_MODEL 覆盖。")
+                        Text("当前通过后端统一接入 AI（支持 Kimi/Gemini）；发布版可在 Info.plist 配置 AI_BACKEND_URL，调试可用 AI_BACKEND_URL / AI_BACKEND_TOKEN / AI_BACKEND_MODEL 覆盖。")
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                         TextField("长期记忆（例如禁忌/偏好）", text: $longTermMemory, axis: .vertical)
@@ -1029,64 +1029,114 @@ struct AIAssistantView: View {
 struct ReminderSettingsView: View {
     @EnvironmentObject private var store: PregnancyStore
 
-    @State private var wakeUpTime = ""
-    @State private var breakfastTime = ""
-    @State private var lunchTime = ""
-    @State private var dinnerTime = ""
-    @State private var sleepTime = ""
+    @State private var wakeUpTime = Date()
+    @State private var breakfastTime = Date()
+    @State private var lunchTime = Date()
+    @State private var dinnerTime = Date()
+    @State private var sleepTime = Date()
     @State private var minutesBefore = 15
+    @State private var enableSystemReminders = false
     @State private var reminderHint = ""
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            TextField("起床时间（HH:mm）", text: $wakeUpTime)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled(true)
-            TextField("早餐时间（HH:mm）", text: $breakfastTime)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled(true)
-            TextField("午餐时间（HH:mm）", text: $lunchTime)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled(true)
-            TextField("晚餐时间（HH:mm）", text: $dinnerTime)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled(true)
-            TextField("睡觉时间（HH:mm）", text: $sleepTime)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled(true)
+        VStack(alignment: .leading, spacing: 12) {
+            settingField(title: "起床时间", selection: $wakeUpTime)
+            settingField(title: "早餐时间", selection: $breakfastTime)
+            settingField(title: "午餐时间", selection: $lunchTime)
+            settingField(title: "晚餐时间", selection: $dinnerTime)
+            settingField(title: "睡觉时间", selection: $sleepTime)
+
             Stepper("提前提醒：\(minutesBefore) 分钟", value: $minutesBefore, in: 0...120, step: 5)
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(AppTheme.textPrimary)
+
+            Toggle("同步到 iOS 提醒事项", isOn: $enableSystemReminders)
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(AppTheme.textPrimary)
 
             Button("保存提醒设置") {
                 saveAndSchedule()
             }
+            .buttonStyle(AppPrimaryButtonStyle())
 
             if !reminderHint.isEmpty {
                 Text(reminderHint)
                     .font(.footnote)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(AppTheme.textSecondary)
             }
         }
+        .padding(12)
+        .background(AppTheme.surfaceMuted)
+        .clipShape(RoundedRectangle(cornerRadius: 12))
         .onAppear {
             let config = store.currentReminderConfig()
-            wakeUpTime = config.wakeUpTime
-            breakfastTime = config.breakfastTime
-            lunchTime = config.lunchTime
-            dinnerTime = config.dinnerTime
-            sleepTime = config.sleepTime
+            wakeUpTime = dateFromHHmm(config.wakeUpTime)
+            breakfastTime = dateFromHHmm(config.breakfastTime)
+            lunchTime = dateFromHHmm(config.lunchTime)
+            dinnerTime = dateFromHHmm(config.dinnerTime)
+            sleepTime = dateFromHHmm(config.sleepTime)
             minutesBefore = config.minutesBefore
+            enableSystemReminders = config.enableSystemReminders
+        }
+    }
+
+    private func settingField(title: String, selection: Binding<Date>) -> some View {
+        HStack(spacing: 8) {
+            Text(title)
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(AppTheme.textPrimary)
+                .frame(width: 78, alignment: .leading)
+            DatePicker(
+                "",
+                selection: selection,
+                displayedComponents: .hourAndMinute
+            )
+            .labelsHidden()
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 10)
+            .frame(minHeight: 40)
+            .background(AppTheme.card)
+            .overlay(
+                RoundedRectangle(cornerRadius: 10)
+                    .stroke(AppTheme.border, lineWidth: 1)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 10))
+            .tint(AppTheme.actionPrimary)
         }
     }
 
     private func saveAndSchedule() {
         let newConfig = ReminderConfig(
-            wakeUpTime: wakeUpTime,
-            breakfastTime: breakfastTime,
-            lunchTime: lunchTime,
-            dinnerTime: dinnerTime,
-            sleepTime: sleepTime,
-            minutesBefore: minutesBefore
+            wakeUpTime: hhmmFromDate(wakeUpTime),
+            breakfastTime: hhmmFromDate(breakfastTime),
+            lunchTime: hhmmFromDate(lunchTime),
+            dinnerTime: hhmmFromDate(dinnerTime),
+            sleepTime: hhmmFromDate(sleepTime),
+            minutesBefore: minutesBefore,
+            enableSystemReminders: enableSystemReminders
         )
         store.saveReminderConfig(newConfig)
-        reminderHint = "提醒设置已保存，将自动同步通知。"
+        reminderHint = enableSystemReminders
+            ? "提醒设置已保存，将自动同步通知和提醒事项。"
+            : "提醒设置已保存，将自动同步通知。"
+    }
+
+    private func dateFromHHmm(_ text: String) -> Date {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "HH:mm"
+        let normalized = store.normalizeTimeText(text) ?? text
+        guard let parsed = formatter.date(from: normalized) else {
+            return Calendar.current.date(bySettingHour: 8, minute: 0, second: 0, of: Date()) ?? Date()
+        }
+        let comps = Calendar.current.dateComponents([.hour, .minute], from: parsed)
+        return Calendar.current.date(bySettingHour: comps.hour ?? 8, minute: comps.minute ?? 0, second: 0, of: Date()) ?? Date()
+    }
+
+    private func hhmmFromDate(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "HH:mm"
+        return formatter.string(from: date)
     }
 }
