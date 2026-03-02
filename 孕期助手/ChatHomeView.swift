@@ -272,125 +272,124 @@ struct ChatHomeView: View {
 
     private var composerDock: some View {
         VStack(spacing: 0) {
-            // 快捷命令条 - 增加间距
+            // 快捷命令条
             if tabBarVisible {
                 QuickCommandStrip(commands: Array(store.quickCommandPrompts().prefix(6))) { command in
                     handleQuickCommandTap(command)
                 }
-                .padding(.horizontal, 20)
-                .padding(.top, 16)
-                .padding(.bottom, 12)
+                .padding(.horizontal, 16)
+                .padding(.top, 12)
+                .padding(.bottom, 8)
             }
 
-            // 输入区域 - 参考微信/飞书设计
-            HStack(alignment: .bottom, spacing: 10) {
-                // 语音按钮
-                pressToTalkButton
+            // 输入区域 - 飞书风格
+            HStack(alignment: .bottom, spacing: 8) {
+                // 左侧功能按钮组
+                HStack(spacing: 8) {
+                    // 语音按钮
+                    pressToTalkButton
 
-                // 相机按钮
-                Button {
-                    showImageSourceDialog = true
-                } label: {
-                    Image(systemName: "camera.fill")
-                        .font(.system(size: 16, weight: .semibold))
-                        .foregroundStyle(.white)
-                        .frame(width: 36, height: 36)
-                        .background(AppTheme.statusInfo)
-                        .clipShape(Circle())
-                }
-                .disabled(isTyping)
-                .accessibilityLabel("上传图片")
-                .accessibilityHint("支持拍照或从相册选择")
-
-                // 输入框 - 更圆润的设计
-                TextField("", text: $inputText, axis: .vertical)
-                    .placeholder(when: inputText.isEmpty) {
-                        Text("像聊天一样告诉我：今晚饭后吃钙片")
-                            .foregroundStyle(AppTheme.textHint.opacity(0.7))
+                    // 相机按钮
+                    Button {
+                        showImageSourceDialog = true
+                    } label: {
+                        Image(systemName: "photo")
+                            .font(.system(size: 18, weight: .medium))
+                            .foregroundStyle(AppTheme.textSecondary)
+                            .frame(width: 32, height: 32)
                     }
-                    .lineLimit(1...5)
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 10)
-                    .background(
-                        RoundedRectangle(cornerRadius: 20)
-                            .fill(AppTheme.cardAlt)
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 20)
-                            .strokeBorder(
-                                inputFocused ? AppTheme.actionPrimary.opacity(0.4) : AppTheme.border.opacity(0.3),
-                                lineWidth: inputFocused ? 1.5 : 1
-                            )
-                    )
-                    .focused($inputFocused)
-                    .animation(.easeInOut(duration: 0.2), value: inputFocused)
-
-                // 发送按钮 - iMessage 风格
-                Button {
-                    Task { await sendMessage() }
-                } label: {
-                    ZStack {
-                        Circle()
-                            .fill(
-                                (isTyping || inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                                ? AnyShapeStyle(AppTheme.textSecondary.opacity(0.3))
-                                : AnyShapeStyle(LinearGradient(
-                                    colors: [AppTheme.actionPrimary, Color(hex: "D85545")],
-                                    startPoint: .topLeading,
-                                    endPoint: .bottomTrailing
-                                ))
-                            )
-                            .frame(width: 36, height: 36)
-
-                        Image(systemName: isTyping ? "ellipsis" : "arrow.up")
-                            .font(.system(size: 16, weight: .bold))
-                            .foregroundStyle(.white)
-                            .symbolEffect(.pulse, isActive: isTyping)
-                    }
-                    .shadow(
-                        color: (isTyping || inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                            ? Color.clear
-                            : AppTheme.actionPrimary.opacity(0.25),
-                        radius: 6,
-                        x: 0,
-                        y: 3
-                    )
-                    .scaleEffect(isTyping ? 0.92 : 1.0)
-                    .animation(.spring(response: 0.25, dampingFraction: 0.65), value: isTyping)
+                    .disabled(isTyping)
+                    .accessibilityLabel("上传图片")
                 }
-                .disabled(isTyping || inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                .accessibilityLabel("发送消息")
-                .accessibilityHint("发送当前输入内容")
-                .accessibilityValue(isTyping ? "发送中" : "可发送")
+
+                // 输入框 - 飞书风格（圆角矩形，毛玻璃效果）
+                HStack(spacing: 8) {
+                    TextField("", text: $inputText, axis: .vertical)
+                        .placeholder(when: inputText.isEmpty) {
+                            Text("说点什么...")
+                                .foregroundStyle(AppTheme.textHint)
+                        }
+                        .lineLimit(1...4)
+                        .font(.system(size: 15))
+                        .foregroundStyle(AppTheme.textPrimary)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .focused($inputFocused)
+
+                    // 发送按钮 - 飞书风格（在输入框内）
+                    if !inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        Button {
+                            Task { await sendMessage() }
+                        } label: {
+                            Image(systemName: "arrow.up.circle.fill")
+                                .font(.system(size: 28))
+                                .foregroundStyle(
+                                    LinearGradient(
+                                        colors: [AppTheme.actionPrimary, AppTheme.accentBrand],
+                                        startPoint: .topLeading,
+                                        endPoint: .bottomTrailing
+                                    )
+                                )
+                        }
+                        .disabled(isTyping)
+                        .transition(.scale.combined(with: .opacity))
+                        .accessibilityLabel("发送消息")
+                    }
+                }
+                .frame(minHeight: 36)
+                .background(
+                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .fill(.white.opacity(0.9))
+                        .background(.ultraThinMaterial)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .strokeBorder(
+                            inputFocused ? AppTheme.actionPrimary.opacity(0.5) : AppTheme.border,
+                            lineWidth: inputFocused ? 1.5 : 1
+                        )
+                )
+                .shadow(
+                    color: inputFocused ? AppTheme.actionPrimary.opacity(0.15) : Color.black.opacity(0.05),
+                    radius: inputFocused ? 8 : 4,
+                    x: 0,
+                    y: 2
+                )
+                .animation(.spring(response: 0.3, dampingFraction: 0.7), value: inputFocused)
+                .animation(.spring(response: 0.3, dampingFraction: 0.7), value: inputText.isEmpty)
             }
-            .padding(.horizontal, 16)
-            .padding(.bottom, 16)
+            .padding(.horizontal, 12)
+            .padding(.bottom, 12)
 
             // 状态提示
             if isRecordingVoice {
                 Text(voicePressState == .canceling ? "松开取消" : "松开发送")
-                    .font(.footnote.weight(.semibold))
+                    .font(.footnote.weight(.medium))
                     .foregroundStyle(voicePressState == .canceling ? AppTheme.statusError : AppTheme.statusInfo)
                     .padding(.horizontal, 16)
                     .padding(.bottom, 8)
             }
 
             if case .processing = ocrProcessingState {
-                Text("图片识别中，请稍候…")
-                    .font(.footnote)
-                    .foregroundStyle(AppTheme.textSecondary)
-                    .padding(.horizontal, 16)
-                    .padding(.bottom, 8)
+                HStack(spacing: 6) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("图片识别中...")
+                        .font(.footnote)
+                        .foregroundStyle(AppTheme.textSecondary)
+                }
+                .padding(.horizontal, 16)
+                .padding(.bottom, 8)
             }
 
             if !errorText.isEmpty {
                 HStack(spacing: 8) {
-                    Image(systemName: "exclamationmark.triangle.fill")
+                    Image(systemName: "exclamationmark.circle.fill")
                         .font(.caption)
-                        .foregroundStyle(.red)
+                        .foregroundStyle(AppTheme.statusError)
                     Text(errorText)
                         .font(.footnote)
-                        .foregroundStyle(.red)
+                        .foregroundStyle(AppTheme.statusError)
                         .lineLimit(2)
                 }
                 .padding(.horizontal, 16)
@@ -399,8 +398,9 @@ struct ChatHomeView: View {
             }
         }
         .background(
-            AppTheme.card
-                .shadow(color: Color.black.opacity(0.05), radius: 20, x: 0, y: -10)
+            .ultraThinMaterial
+                .opacity(0.95)
+                .shadow(color: Color.black.opacity(0.08), radius: 16, x: 0, y: -4)
                 .ignoresSafeArea(edges: .bottom)
         )
     }
@@ -417,21 +417,30 @@ struct ChatHomeView: View {
                 endPressToTalk()
             }
 
-        return ZStack {
-            Circle()
-                .fill(voiceButtonBackgroundColor)
-                .frame(width: 36, height: 36)
+        return Button {} label: {
             Image(systemName: voiceButtonSymbol)
-                .font(.system(size: 16, weight: .semibold))
-                .foregroundStyle(.white)
+                .font(.system(size: 18, weight: .medium))
+                .foregroundStyle(voiceButtonForegroundColor)
+                .frame(width: 32, height: 32)
         }
-        .opacity(isTyping ? 0.55 : 1)
+        .opacity(isTyping ? 0.5 : 1)
         .allowsHitTesting(!isTyping)
         .gesture(dragGesture)
         .accessibilityElement()
         .accessibilityLabel("按住说话")
         .accessibilityHint("按住录音，松开发送；上滑取消")
         .accessibilityValue(voicePressState == .canceling ? "将取消" : (isRecordingVoice ? "录音中" : "待机"))
+    }
+
+    private var voiceButtonForegroundColor: Color {
+        switch voicePressState {
+        case .idle:
+            return AppTheme.textSecondary
+        case .recording:
+            return AppTheme.actionPrimary
+        case .canceling:
+            return AppTheme.statusError
+        }
     }
 
     private var voiceButtonSymbol: String {
@@ -974,38 +983,55 @@ struct AssistantBubble<Content: View>: View {
     }
 
     var body: some View {
-        HStack(alignment: .bottom, spacing: 8) {
-            // 助手头像 - 更小更精致
+        HStack(alignment: .bottom, spacing: 10) {
+            // 助手头像 - 渐变圆形
             Circle()
                 .fill(
                     LinearGradient(
-                        colors: [Color(hex: "FCEEE3"), Color(hex: "F9DCC8")],
+                        colors: [
+                            Color(hex: "FFD4E5"),
+                            Color(hex: "E8B4D9")
+                        ],
                         startPoint: .topLeading,
                         endPoint: .bottomTrailing
                     )
                 )
-                .frame(width: 32, height: 32)
+                .frame(width: 36, height: 36)
                 .overlay(
                     Image(systemName: "sparkles")
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(AppTheme.actionPrimary)
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(
+                            LinearGradient(
+                                colors: [AppTheme.actionPrimary, AppTheme.accentBrand],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            )
+                        )
                 )
-                .shadow(color: AppTheme.actionPrimary.opacity(0.12), radius: 4, x: 0, y: 2)
+                .shadow(color: AppTheme.actionPrimary.opacity(0.2), radius: 8, x: 0, y: 2)
 
-            // 气泡 - 微信风格
+            // 气泡 - Glassmorphism 风格
             content
-                .padding(.horizontal, 12)
+                .padding(.horizontal, 14)
                 .padding(.vertical, 10)
                 .background(
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .fill(AppTheme.card)
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .fill(.white.opacity(0.85))
+                        .background(.ultraThinMaterial)
                 )
                 .overlay(
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .strokeBorder(AppTheme.border.opacity(0.4), lineWidth: 0.5)
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .strokeBorder(
+                            LinearGradient(
+                                colors: [.white.opacity(0.6), .white.opacity(0.2)],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            ),
+                            lineWidth: 1
+                        )
                 )
-                .shadow(color: Color.black.opacity(0.04), radius: 4, x: 0, y: 2)
-                .frame(maxWidth: 260, alignment: .leading)
+                .shadow(color: Color.black.opacity(0.06), radius: 12, x: 0, y: 4)
+                .frame(maxWidth: 280, alignment: .leading)
 
             Spacer()
         }
@@ -1022,22 +1048,37 @@ struct UserBubble<Content: View>: View {
     var body: some View {
         HStack {
             Spacer()
-            // 用户气泡 - 微信绿色风格
+            // 用户气泡 - Glassmorphism 风格，女性向渐变
             content
-                .padding(.horizontal, 12)
+                .padding(.horizontal, 14)
                 .padding(.vertical, 10)
                 .background(
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
                         .fill(
                             LinearGradient(
-                                colors: [Color(hex: "95EC69"), Color(hex: "7FD858")],
+                                colors: [
+                                    Color(hex: "FFB6D9"),
+                                    Color(hex: "E88B9C")
+                                ],
                                 startPoint: .topLeading,
                                 endPoint: .bottomTrailing
                             )
                         )
+                        .opacity(0.9)
                 )
-                .shadow(color: Color(hex: "7FD858").opacity(0.2), radius: 4, x: 0, y: 2)
-                .frame(maxWidth: 260, alignment: .trailing)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .strokeBorder(
+                            LinearGradient(
+                                colors: [.white.opacity(0.5), .white.opacity(0.1)],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            ),
+                            lineWidth: 1
+                        )
+                )
+                .shadow(color: AppTheme.actionPrimary.opacity(0.25), radius: 12, x: 0, y: 4)
+                .frame(maxWidth: 280, alignment: .trailing)
         }
     }
 }

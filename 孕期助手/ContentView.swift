@@ -63,15 +63,24 @@ struct ContentView: View {
             tabItemButton(tab: .records, title: "记录", icon: "list.bullet.rectangle.portrait.fill")
             tabItemButton(tab: .profile, title: "我的", icon: "person.crop.circle.fill")
         }
-        .padding(.top, 8)
-        .frame(height: AppLayout.mainTabBarHeight, alignment: .top)
+        .frame(height: AppLayout.mainTabBarHeight)
         .padding(.bottom, AppLayout.tabBarBottomSafePadding)
         .frame(maxWidth: .infinity)
         .background(
-            AppTheme.card
-                .shadow(color: Color.black.opacity(0.08), radius: 12, x: 0, y: -4)
+            .ultraThinMaterial
+                .opacity(0.95)
+                .shadow(color: Color.black.opacity(0.08), radius: 16, x: 0, y: -4)
                 .ignoresSafeArea(edges: .bottom)
         )
+        .overlay(alignment: .top) {
+            // 顶部高光线
+            LinearGradient(
+                colors: [.white.opacity(0.3), .clear],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            .frame(height: 1)
+        }
     }
 
     private func tabItemButton(tab: MainTab, title: String, icon: String) -> some View {
@@ -83,14 +92,27 @@ struct ContentView: View {
         } label: {
             VStack(spacing: 4) {
                 Image(systemName: icon)
-                    .font(.system(size: 22, weight: .medium))
+                    .font(.system(size: 24, weight: .medium))
                     .symbolEffect(.bounce, value: selected)
+                    .foregroundStyle(
+                        selected
+                        ? LinearGradient(
+                            colors: [AppTheme.actionPrimary, AppTheme.accentBrand],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                        : LinearGradient(
+                            colors: [AppTheme.textSecondary, AppTheme.textSecondary],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
                 Text(title)
-                    .font(.caption.weight(.medium))
+                    .font(.system(size: 11, weight: selected ? .semibold : .regular))
+                    .foregroundStyle(selected ? AppTheme.actionPrimary : AppTheme.textSecondary)
             }
-            .foregroundStyle(selected ? AppTheme.actionPrimary : AppTheme.textSecondary)
             .frame(maxWidth: .infinity)
-            .frame(height: 52)
+            .frame(height: AppLayout.mainTabBarHeight)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
