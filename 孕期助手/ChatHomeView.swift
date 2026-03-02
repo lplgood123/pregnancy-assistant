@@ -129,31 +129,10 @@ struct ChatHomeView: View {
                 topFixedInfoBar
             }
             .safeAreaInset(edge: .bottom, spacing: 0) {
-                VStack(spacing: 0) {
-                    composerDock
-                    if tabBarVisible {
-                        Color.clear
-                            .frame(height: AppLayout.tabBarVisibleHeight)
-                            .allowsHitTesting(false)
-                    }
-                }
+                composerDock
             }
             .font(AppTheme.bodyFont)
             .toolbar(.hidden, for: .navigationBar)
-            .toolbar {
-                ToolbarItemGroup(placement: .keyboard) {
-                    if composerInputMode == .text {
-                        Spacer()
-                        Button("发送") {
-                            Task {
-                                await sendMessage()
-                            }
-                        }
-                        .font(.subheadline.weight(.semibold))
-                        .disabled(isTyping || inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                    }
-                }
-            }
             .alert("确认记录", isPresented: $showConfirm) {
                 Button("取消", role: .cancel) { }
                 Button("确认") {
@@ -300,8 +279,8 @@ struct ChatHomeView: View {
                     handleQuickCommandTap(command)
                 }
                 .padding(.horizontal, 16)
-                .padding(.top, 12)
-                .padding(.bottom, 8)
+                .padding(.top, 8)
+                .padding(.bottom, 6)
             }
 
             HStack(alignment: .center, spacing: 8) {
@@ -310,7 +289,8 @@ struct ChatHomeView: View {
                 imageUploadButton
             }
             .padding(.horizontal, 12)
-            .padding(.bottom, 12)
+            .padding(.top, tabBarVisible ? 0 : 10)
+            .padding(.bottom, 8)
 
             // 状态提示
             if isRecordingVoice {
@@ -349,16 +329,14 @@ struct ChatHomeView: View {
             }
         }
         .background {
-            ZStack {
-                Color.white.opacity(0.7)
-                    .background(.ultraThinMaterial)
-            }
-            .shadow(color: Color.black.opacity(0.08), radius: 16, x: 0, y: -4)
+            Color(hex: "F7F8FA")
+                .ignoresSafeArea(edges: .bottom)
+                .shadow(color: Color.black.opacity(0.06), radius: 8, x: 0, y: -2)
         }
         .overlay(alignment: .top) {
             Rectangle()
-                .fill(AppTheme.borderLight)
-                .frame(height: 1)
+                .fill(Color(hex: "E9EDF2").opacity(0.6))
+                .frame(height: 0.5)
         }
     }
 
