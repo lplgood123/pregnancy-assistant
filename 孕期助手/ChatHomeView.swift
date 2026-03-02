@@ -333,12 +333,12 @@ struct ChatHomeView: View {
                         Circle()
                             .fill(
                                 (isTyping || inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                                ? AppTheme.textSecondary.opacity(0.3)
-                                : LinearGradient(
+                                ? AnyShapeStyle(AppTheme.textSecondary.opacity(0.3))
+                                : AnyShapeStyle(LinearGradient(
                                     colors: [AppTheme.actionPrimary, Color(hex: "D85545")],
                                     startPoint: .topLeading,
                                     endPoint: .bottomTrailing
-                                )
+                                ))
                             )
                             .frame(width: 36, height: 36)
 
