@@ -337,11 +337,14 @@ struct ChatHomeView: View {
                     }
                 }
                 .frame(minHeight: 36)
-                .background(
-                    RoundedRectangle(cornerRadius: 18, style: .continuous)
-                        .fill(.white.opacity(0.9))
-                        .background(.ultraThinMaterial)
-                )
+                .background {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 18, style: .continuous)
+                            .fill(.white.opacity(0.9))
+                        RoundedRectangle(cornerRadius: 18, style: .continuous)
+                            .fill(.ultraThinMaterial)
+                    }
+                }
                 .overlay(
                     RoundedRectangle(cornerRadius: 18, style: .continuous)
                         .strokeBorder(
@@ -397,12 +400,14 @@ struct ChatHomeView: View {
                 .transition(.move(edge: .top).combined(with: .opacity))
             }
         }
-        .background(
-            .ultraThinMaterial
-                .opacity(0.95)
-                .shadow(color: Color.black.opacity(0.08), radius: 16, x: 0, y: -4)
-                .ignoresSafeArea(edges: .bottom)
-        )
+        .background {
+            ZStack {
+                Color.white.opacity(0.7)
+                    .background(.ultraThinMaterial)
+                    .ignoresSafeArea(edges: .bottom)
+            }
+            .shadow(color: Color.black.opacity(0.08), radius: 16, x: 0, y: -4)
+        }
     }
 
     private var pressToTalkButton: some View {
@@ -1014,11 +1019,14 @@ struct AssistantBubble<Content: View>: View {
             content
                 .padding(.horizontal, 14)
                 .padding(.vertical, 10)
-                .background(
-                    RoundedRectangle(cornerRadius: 16, style: .continuous)
-                        .fill(.white.opacity(0.85))
-                        .background(.ultraThinMaterial)
-                )
+                .background {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                            .fill(.white.opacity(0.85))
+                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                            .fill(.ultraThinMaterial)
+                    }
+                }
                 .overlay(
                     RoundedRectangle(cornerRadius: 16, style: .continuous)
                         .strokeBorder(

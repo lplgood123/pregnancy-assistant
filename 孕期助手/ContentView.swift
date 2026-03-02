@@ -66,12 +66,14 @@ struct ContentView: View {
         .frame(height: AppLayout.mainTabBarHeight)
         .padding(.bottom, AppLayout.tabBarBottomSafePadding)
         .frame(maxWidth: .infinity)
-        .background(
-            .ultraThinMaterial
-                .opacity(0.95)
-                .shadow(color: Color.black.opacity(0.08), radius: 16, x: 0, y: -4)
-                .ignoresSafeArea(edges: .bottom)
-        )
+        .background {
+            ZStack {
+                Color.white.opacity(0.7)
+                    .background(.ultraThinMaterial)
+                    .ignoresSafeArea(edges: .bottom)
+            }
+            .shadow(color: Color.black.opacity(0.08), radius: 16, x: 0, y: -4)
+        }
         .overlay(alignment: .top) {
             // 顶部高光线
             LinearGradient(
