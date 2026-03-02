@@ -17,19 +17,21 @@ enum AppTheme {
     static let card = Color.white
     static let cardAlt = Color(hex: "F7F0EB")
     static let surfaceMuted = Color(hex: "F5F1EC")
-    static let border = Color(hex: "EDE8E1")
+    static let border = Color(hex: "E1D7CD")
     static let borderLight = Color(hex: "F5F1EC")
 
     static let textPrimary = Color(hex: "3B2F2A")
-    static let textSecondary = Color(hex: "837369")
-    static let textHint = Color(hex: "81746A")
+    static let textSecondary = Color(hex: "6F6056")
+    static let textHint = Color(hex: "77695F")
 
     static let bannerSuccess = Color(hex: "4C8164")
     static let bannerInfo = Color(hex: "4D78A0")
     static let bannerError = Color(hex: "BC5555")
 
-    static let statusSuccess = Color(hex: "6BAB8A")
+    static let statusSuccess = Color(hex: "3F7A58")
     static let statusSuccessSoft = Color(hex: "EDF7F1")
+    static let statusError = Color(hex: "BC5555")
+    static let statusErrorSoft = Color(hex: "FBEFF0")
     static let statusInfo = Color(hex: "4D78A0")
     static let statusInfoSoft = Color(hex: "EDF3F8")
 
@@ -44,10 +46,10 @@ enum AppTheme {
 }
 
 enum AppLayout {
-    static let mainTabBarHeight: CGFloat = 64
+    static let mainTabBarHeight: CGFloat = 68
     static let bottomDockGap: CGFloat = 8
     static let bottomActionHeight: CGFloat = 48
-    static let scrollTailPadding: CGFloat = 12
+    static let scrollTailPadding: CGFloat = 16
 
     static var mainTabBarBottomSafeInset: CGFloat {
         guard
@@ -60,19 +62,23 @@ enum AppLayout {
     }
 
     static var tabBarBottomSafePadding: CGFloat {
-        max(mainTabBarBottomSafeInset, 8)
+        mainTabBarBottomSafeInset
     }
 
-    // Use this only for the root tab container height.
-    // Page-level docks should use bottomDockGap instead of reusing tabBarOccupiedHeight.
+    // Root tab bar total occupied height, including device bottom safe inset.
     static var tabBarOccupiedHeight: CGFloat {
         mainTabBarHeight + tabBarBottomSafePadding
     }
 
-    // Dock controls inside tab pages should sit flush on top of the custom tab bar.
-    // Keep a small visual breathing room between dock and tab bar.
+    // Dock controls rendered inside nested tab pages need explicit offset.
+    // TabView-level safeAreaInset does not reliably push nested page safeAreaInset content.
     static var dockBottomInsetAboveTabBar: CGFloat {
-        bottomDockGap
+        tabBarOccupiedHeight + bottomDockGap
+    }
+
+    // Extra trailing space for scroll/list content in tab pages.
+    static var tabPageScrollTailPadding: CGFloat {
+        tabBarOccupiedHeight + 16
     }
 }
 
@@ -103,6 +109,17 @@ extension Color {
 extension View {
     func appTapTarget(minWidth: CGFloat = 44, minHeight: CGFloat = 44) -> some View {
         frame(minWidth: minWidth, minHeight: minHeight)
+    }
+
+    func placeholder<Content: View>(
+        when shouldShow: Bool,
+        alignment: Alignment = .leading,
+        @ViewBuilder placeholder: () -> Content
+    ) -> some View {
+        ZStack(alignment: alignment) {
+            placeholder().opacity(shouldShow ? 1 : 0)
+            self
+        }
     }
 }
 

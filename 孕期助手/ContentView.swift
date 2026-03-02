@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 enum MainTab: Hashable {
     case home
@@ -10,40 +11,35 @@ struct ContentView: View {
     @EnvironmentObject private var store: PregnancyStore
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var selectedTab: MainTab = .home
+    @State private var isKeyboardVisible = false
     @State private var isReminderSyncing = false
     @State private var hasPendingReminderSync = false
     @State private var lastSyncedReminderRevision = 0
 
     var body: some View {
-        TabView(selection: $selectedTab) {
-            ChatHomeView()
-                .tag(MainTab.home)
-                .tabItem {
-                    Label("首页", systemImage: "house")
-                }
-
-            CheckListView()
-                .tag(MainTab.records)
-                .tabItem {
-                    Label("记录", systemImage: "square.text.square")
-                }
-
-            ProfileView()
-                .tag(MainTab.profile)
-                .tabItem {
-                    Label("我的", systemImage: "person.crop.circle")
-                }
+        Group {
+            switch selectedTab {
+            case .home:
+                ChatHomeView(tabBarVisible: !isKeyboardVisible)
+            case .records:
+                CheckListView()
+            case .profile:
+                ProfileView()
+            }
         }
-        .toolbar(.hidden, for: .tabBar)
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            customTabBar
+            if !isKeyboardVisible {
+                customTabBar
+            }
         }
         .overlay(alignment: .top) {
             if let banner = store.globalBanner {
-                GlobalBannerBar(banner: banner)
-                    .padding(.top, 6)
-                    .padding(.horizontal, 12)
-                    .transition(reduceMotion ? .opacity : .move(edge: .top).combined(with: .opacity))
+                GlobalBannerBar(banner: banner) {
+                    store.dismissGlobalBanner()
+                }
+                .padding(.top, 6)
+                .padding(.horizontal, 12)
+                .transition(reduceMotion ? .opacity : .move(edge: .top).combined(with: .opacity))
             }
         }
         .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: store.globalBanner?.id)
@@ -53,6 +49,12 @@ struct ContentView: View {
         .onChange(of: store.reminderSyncRevision) { _, _ in
             syncRemindersIfNeeded()
         }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) { notification in
+            handleKeyboardFrameChange(notification)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
+            setKeyboardVisibility(false)
+        }
     }
 
     private var customTabBar: some View {
@@ -61,36 +63,35 @@ struct ContentView: View {
             tabItemButton(tab: .records, title: "记录", icon: "list.bullet.rectangle.portrait.fill")
             tabItemButton(tab: .profile, title: "我的", icon: "person.crop.circle.fill")
         }
-        .padding(.top, 0)
+        .padding(.top, 8)
         .frame(height: AppLayout.mainTabBarHeight, alignment: .top)
         .padding(.bottom, AppLayout.tabBarBottomSafePadding)
         .frame(maxWidth: .infinity)
         .background(
             AppTheme.card
+                .shadow(color: Color.black.opacity(0.08), radius: 12, x: 0, y: -4)
                 .ignoresSafeArea(edges: .bottom)
         )
-        .overlay(alignment: .top) {
-            Rectangle()
-                .fill(AppTheme.border)
-                .frame(height: 1)
-        }
     }
 
     private func tabItemButton(tab: MainTab, title: String, icon: String) -> some View {
         let selected = selectedTab == tab
         return Button {
-            selectedTab = tab
+            withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
+                selectedTab = tab
+            }
         } label: {
             VStack(spacing: 4) {
                 Image(systemName: icon)
-                    .font(.system(size: 20, weight: .semibold))
+                    .font(.system(size: 22, weight: .medium))
+                    .symbolEffect(.bounce, value: selected)
                 Text(title)
-                    .font(.footnote.weight(.semibold))
+                    .font(.caption.weight(.medium))
             }
             .foregroundStyle(selected ? AppTheme.actionPrimary : AppTheme.textSecondary)
             .frame(maxWidth: .infinity)
-            .appTapTarget(minHeight: 44)
-            .background(selected ? AppTheme.accentSoft.opacity(0.45) : Color.clear)
+            .frame(height: 52)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
     }
@@ -115,12 +116,21 @@ struct ContentView: View {
                 isReminderSyncing = false
 
                 switch outcome {
-                case .success:
-                    store.showGlobalBanner(message: "提醒已自动更新。", level: .success)
-                case .permissionDenied:
+                case .localPermissionDenied:
                     store.showGlobalBanner(message: "未开启通知权限，提醒未更新。", level: .error)
-                case .failed(let reason):
+                case .localFailed(let reason):
                     store.showGlobalBanner(message: "提醒更新失败：\(reason)", level: .error)
+                case .localSuccess(let system):
+                    switch system {
+                    case .skippedDisabled:
+                        store.showGlobalBanner(message: "提醒已自动更新。", level: .success)
+                    case .success:
+                        store.showGlobalBanner(message: "提醒已更新（通知+提醒事项）。", level: .success)
+                    case .permissionDenied:
+                        store.showGlobalBanner(message: "通知已更新，未授予提醒事项权限。", level: .info)
+                    case .failed:
+                        store.showGlobalBanner(message: "通知已更新，提醒事项同步失败。", level: .info)
+                    }
                 }
 
                 if hasPendingReminderSync {
@@ -130,10 +140,36 @@ struct ContentView: View {
             }
         }
     }
+
+    private func handleKeyboardFrameChange(_ notification: Notification) {
+        guard
+            let userInfo = notification.userInfo,
+            let endFrame = userInfo[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect
+        else {
+            return
+        }
+
+        // Keyboard is considered visible when its end frame intersects the screen.
+        let screenHeight = UIScreen.main.bounds.height
+        let keyboardVisible = endFrame.minY < (screenHeight - 1)
+        setKeyboardVisibility(keyboardVisible)
+    }
+
+    private func setKeyboardVisibility(_ visible: Bool) {
+        guard visible != isKeyboardVisible else { return }
+        if reduceMotion {
+            isKeyboardVisible = visible
+        } else {
+            withAnimation(.easeOut(duration: 0.18)) {
+                isKeyboardVisible = visible
+            }
+        }
+    }
 }
 
 struct GlobalBannerBar: View {
     let banner: GlobalBanner
+    let onDismiss: () -> Void
 
     var body: some View {
         HStack(spacing: 8) {
@@ -143,6 +179,15 @@ struct GlobalBannerBar: View {
                 .font(.footnote.weight(.semibold))
                 .lineLimit(2)
             Spacer(minLength: 0)
+            Button {
+                onDismiss()
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(.white.opacity(0.8))
+                    .frame(width: 20, height: 20)
+                    .contentShape(Rectangle())
+            }
         }
         .foregroundStyle(.white)
         .padding(.horizontal, 12)
@@ -261,7 +306,7 @@ struct ProfileView: View {
 
                     }
                     .padding(.top, 12)
-                    .padding(.bottom, AppLayout.scrollTailPadding)
+                    .padding(.bottom, AppLayout.tabPageScrollTailPadding)
                 }
             }
             .navigationTitle("我的")

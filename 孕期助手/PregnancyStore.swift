@@ -286,6 +286,7 @@ struct ReminderConfig: Codable {
     var dinnerTime: String
     var sleepTime: String
     var minutesBefore: Int
+    var enableSystemReminders: Bool
 
     init(
         wakeUpTime: String,
@@ -293,7 +294,8 @@ struct ReminderConfig: Codable {
         lunchTime: String,
         dinnerTime: String,
         sleepTime: String,
-        minutesBefore: Int
+        minutesBefore: Int,
+        enableSystemReminders: Bool = false
     ) {
         self.wakeUpTime = wakeUpTime
         self.breakfastTime = breakfastTime
@@ -301,6 +303,7 @@ struct ReminderConfig: Codable {
         self.dinnerTime = dinnerTime
         self.sleepTime = sleepTime
         self.minutesBefore = minutesBefore
+        self.enableSystemReminders = enableSystemReminders
     }
 
     init(from decoder: Decoder) throws {
@@ -311,6 +314,7 @@ struct ReminderConfig: Codable {
         dinnerTime = try container.decodeIfPresent(String.self, forKey: .dinnerTime) ?? "18:30"
         sleepTime = try container.decodeIfPresent(String.self, forKey: .sleepTime) ?? "22:30"
         minutesBefore = try container.decodeIfPresent(Int.self, forKey: .minutesBefore) ?? 0
+        enableSystemReminders = try container.decodeIfPresent(Bool.self, forKey: .enableSystemReminders) ?? false
     }
 }
 
@@ -601,7 +605,7 @@ struct TimelineItem: Identifiable {
         var color: Color {
             switch self {
             case .medication: return AppTheme.actionPrimary
-            case .habit: return Color(hex: "6BAB8A")
+            case .habit: return AppTheme.statusSuccess
             case .check: return AppTheme.statusInfo
             case .appointment: return Color(hex: "A48BBF")
             }
@@ -610,7 +614,7 @@ struct TimelineItem: Identifiable {
         var colorSoft: Color {
             switch self {
             case .medication: return AppTheme.accentSoft
-            case .habit: return Color(hex: "EDF7F1")
+            case .habit: return AppTheme.statusSuccessSoft
             case .check: return AppTheme.statusInfoSoft
             case .appointment: return Color(hex: "F3EFF8")
             }
@@ -628,7 +632,7 @@ struct TimelineItem: Identifiable {
     var isActionable: Bool
 
     var dotColor: Color {
-        if isCompleted { return Color(hex: "6BAB8A") }
+        if isCompleted { return AppTheme.statusSuccess }
         if isActive { return AppTheme.accentSoft }
         return AppTheme.cardAlt
     }
@@ -680,6 +684,7 @@ final class PregnancyStore: ObservableObject {
         migrateLegacyCheckRecordsIfNeeded()
         migrateOnboardingStateIfNeeded()
         normalizeArchiveFlagsIfNeeded()
+        clearSeededSampleDataIfNeeded()
         normalizeDailyState()
     }
 
@@ -770,6 +775,11 @@ final class PregnancyStore: ObservableObject {
         }
     }
 
+    func dismissGlobalBanner() {
+        globalBanner = nil
+        bannerNonce = nil
+    }
+
     func addAppointment(title: String, dueDate: Date, detail: String) {
         let item = AppointmentItem(
             id: UUID().uuidString,
@@ -809,38 +819,63 @@ final class PregnancyStore: ObservableObject {
         markReminderRulesDirty()
     }
 
-    func archiveMedication(id: String) {
+    func deleteMedication(id: String) {
         guard let index = state.medications.firstIndex(where: { $0.id == id }) else { return }
-        state.medications[index].isArchived = true
+        state.medications.remove(at: index)
         state.completedDailyTaskIDs.removeAll { $0 == "med-\(id)" }
         markReminderRulesDirty()
     }
 
-    func archiveMedicationGroup(named name: String) {
+    func deleteMedicationGroup(named name: String) {
         let target = name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !target.isEmpty else { return }
-        var changed = false
-        for index in state.medications.indices where state.medications[index].name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == target {
-            state.medications[index].isArchived = true
-            state.completedDailyTaskIDs.removeAll { $0 == "med-\(state.medications[index].id)" }
-            changed = true
-        }
-        if changed {
-            markReminderRulesDirty()
-        }
-    }
+        let removedIDs = state.medications
+            .filter { $0.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == target }
+            .map(\.id)
+        guard !removedIDs.isEmpty else { return }
 
-    func archiveAppointment(id: String) {
-        guard let index = state.appointments.firstIndex(where: { $0.id == id }) else { return }
-        state.appointments[index].isArchived = true
-        state.appointments[index].isDone = true
+        state.medications.removeAll { med in
+            med.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == target
+        }
+        for id in removedIDs {
+            state.completedDailyTaskIDs.removeAll { $0 == "med-\(id)" }
+        }
         markReminderRulesDirty()
     }
 
-    func archiveCheckRecord(id: String) {
-        guard var list = state.checkRecords, let index = list.firstIndex(where: { $0.id == id }) else { return }
-        list[index].isArchived = true
+    func deleteAppointment(id: String) {
+        guard let index = state.appointments.firstIndex(where: { $0.id == id }) else { return }
+        state.appointments.remove(at: index)
+        markReminderRulesDirty()
+    }
+
+    func deleteCheckRecord(id: String) {
+        guard var list = state.checkRecords else { return }
+        let originalCount = list.count
+        list.removeAll { $0.id == id }
+        guard list.count != originalCount else { return }
         state.checkRecords = list
+        state.labRecords.removeAll { $0.id == id }
+    }
+
+    @available(*, deprecated, message: "Use deleteMedication(id:) instead.")
+    func archiveMedication(id: String) {
+        deleteMedication(id: id)
+    }
+
+    @available(*, deprecated, message: "Use deleteMedicationGroup(named:) instead.")
+    func archiveMedicationGroup(named name: String) {
+        deleteMedicationGroup(named: name)
+    }
+
+    @available(*, deprecated, message: "Use deleteAppointment(id:) instead.")
+    func archiveAppointment(id: String) {
+        deleteAppointment(id: id)
+    }
+
+    @available(*, deprecated, message: "Use deleteCheckRecord(id:) instead.")
+    func archiveCheckRecord(id: String) {
+        deleteCheckRecord(id: id)
     }
 
     var todayNotes: [TodayNoteItem] {
@@ -966,17 +1001,37 @@ final class PregnancyStore: ObservableObject {
     }
 
     func currentAIConfig() -> AIConfig {
-        let stored = state.aiConfig ?? AIConfigProvider.defaultConfig()
+        let defaults = AIConfigProvider.defaultConfig()
+        let stored = state.aiConfig
         let overrides = AIConfigProvider.environmentOverrides()
 
-        let mergedBase = overrides.baseURL ?? stored.baseURL
-        let mergedKey = overrides.apiKey ?? stored.apiKey
-        let mergedModel = overrides.model ?? stored.model
+        let storedBase = stored?.baseURL.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let storedKey = stored?.apiKey.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let storedModel = stored?.model.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
 
-        let baseURL = mergedBase.trimmingCharacters(in: .whitespacesAndNewlines)
-        let apiKey = mergedKey.trimmingCharacters(in: .whitespacesAndNewlines)
-        let modelTrimmed = mergedModel.trimmingCharacters(in: .whitespacesAndNewlines)
-        let model = modelTrimmed.isEmpty ? AIConfigProvider.defaultModel : modelTrimmed
+        let defaultBase = defaults.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        let defaultKey = defaults.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        let defaultModel = defaults.model.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // Prefer app-level defaults so all devices converge on the cloud backend.
+        // Stored values are treated as fallback only when defaults are missing.
+        var baseURL = defaultBase.isEmpty ? storedBase : defaultBase
+        var apiKey = defaultKey.isEmpty ? storedKey : defaultKey
+        var model = defaultModel.isEmpty ? storedModel : defaultModel
+
+        if let overrideBase = overrides.baseURL?.trimmingCharacters(in: .whitespacesAndNewlines), !overrideBase.isEmpty {
+            baseURL = overrideBase
+        }
+        if let overrideKey = overrides.apiKey?.trimmingCharacters(in: .whitespacesAndNewlines), !overrideKey.isEmpty {
+            apiKey = overrideKey
+        }
+        if let overrideModel = overrides.model?.trimmingCharacters(in: .whitespacesAndNewlines), !overrideModel.isEmpty {
+            model = overrideModel
+        }
+
+        if model.isEmpty {
+            model = AIConfigProvider.fallbackModel
+        }
 
         return AIConfig(baseURL: baseURL, apiKey: apiKey, model: model)
     }
@@ -1247,7 +1302,8 @@ final class PregnancyStore: ObservableObject {
             lunchTime: "12:30",
             dinnerTime: "18:30",
             sleepTime: "22:30",
-            minutesBefore: 15
+            minutesBefore: 15,
+            enableSystemReminders: false
         )
     }
 
@@ -1258,7 +1314,8 @@ final class PregnancyStore: ObservableObject {
             lunchTime: config.lunchTime.trimmingCharacters(in: .whitespacesAndNewlines),
             dinnerTime: config.dinnerTime.trimmingCharacters(in: .whitespacesAndNewlines),
             sleepTime: config.sleepTime.trimmingCharacters(in: .whitespacesAndNewlines),
-            minutesBefore: max(config.minutesBefore, 0)
+            minutesBefore: max(config.minutesBefore, 0),
+            enableSystemReminders: config.enableSystemReminders
         )
         markReminderRulesDirty()
     }
@@ -1511,22 +1568,18 @@ final class PregnancyStore: ObservableObject {
     func homeOpeningLine() -> String {
         let summary = homeSummary()
         let tomorrow = normalizedTomorrowHint(from: summary.tomorrowHint)
-
-        if let next = nextUpcomingMedication() {
-            let templates = [
-                "\(next.period.rawValue)会提醒你服药哦，要我告诉你都有哪些药吗？",
-                "\(next.period.rawValue)我会准时提醒你吃药，要不要我先把药单和剂量说给你听？"
-            ]
-            let index = calendar.component(.day, from: Date()) % templates.count
-            return templates[index] + tomorrow
-        }
-
         let templates = [
-            "今天你的用药提醒都完成啦，真棒。",
-            "今天该提醒的用药都完成啦，辛苦你啦。"
+            "我会提醒你按时吃药、按计划打针，也会盯着就诊和你设置的提醒。",
+            "今天我会帮你盯住用药、打针、就诊和其他提醒安排。"
         ]
         let index = calendar.component(.day, from: Date()) % templates.count
-        return templates[index] + tomorrow
+        let progressText: String
+        if summary.left == 0 {
+            progressText = "今天当前待办已完成。"
+        } else {
+            progressText = "今天还有 \(summary.left) 项待办，我会继续提醒。"
+        }
+        return "\(templates[index])\(progressText)\(tomorrow)"
     }
 
     func homeSummarySnapshotText() -> String {
@@ -1535,9 +1588,25 @@ final class PregnancyStore: ObservableObject {
         let pendingItems = todayItems
             .filter { !$0.isCompleted }
             .sorted { (timeToMinutes($0.timeText) ?? 0) < (timeToMinutes($1.timeText) ?? 0) }
-            .prefix(4)
-            .map { "\($0.timeText) \($0.title)" }
-        let pendingText = pendingItems.isEmpty ? "今天待办已清空" : pendingItems.joined(separator: "；")
+            .prefix(5)
+
+        var pendingGroups: [String] = []
+        let hasMedication = pendingItems.contains { $0.kind == .medication }
+        let hasCheck = pendingItems.contains { $0.kind == .check }
+        let hasAppointment = pendingItems.contains { $0.kind == .appointment }
+        if hasMedication {
+            pendingGroups.append("按时吃药")
+        }
+        if hasCheck || isInjectionDueToday() {
+            pendingGroups.append("打针/检查")
+        }
+        if hasAppointment {
+            pendingGroups.append("就诊安排")
+        }
+        if !state.extraDailyItems.isEmpty {
+            pendingGroups.append("其他提醒")
+        }
+        let pendingText = pendingGroups.isEmpty ? "今天待办已清空" : pendingGroups.joined(separator: "、")
 
         let reviewText: String
         if let upcoming = nearestPendingAppointmentWithin14Days() {
@@ -1546,12 +1615,10 @@ final class PregnancyStore: ObservableObject {
             reviewText = "近期暂无复查安排"
         }
 
-        let reminderText = state.extraDailyItems.isEmpty
-            ? "无额外提醒"
-            : state.extraDailyItems.prefix(3).map { "\($0.period.rawValue)\($0.title)" }.joined(separator: "；")
+        let reminderText = state.extraDailyItems.isEmpty ? "无额外提醒" : "有\(state.extraDailyItems.count)条自定义提醒"
         let nextText: String
         if let next = nextUpcomingMedication() {
-            nextText = "\(next.period.rawValue) \(next.title)（\(next.timeText)）"
+            nextText = "\(next.period.rawValue)（\(next.timeText)）"
         } else {
             nextText = "今日用药提醒已完成"
         }
@@ -1560,7 +1627,7 @@ final class PregnancyStore: ObservableObject {
         当前孕周：\(gestationalWeekText)
         预产期：\(formatDate(dueDate))
         今日进度：总\(summary.total)项，已完成\(summary.done)项，剩余\(summary.left)项
-        今天待办：\(pendingText)
+        今日重点：\(pendingText)
         下一个提醒：\(nextText)
         近期复查：\(reviewText)
         用户提醒：\(reminderText)
@@ -1657,30 +1724,30 @@ final class PregnancyStore: ObservableObject {
         switch pregnancyStage {
         case .early:
             return [
+                QuickCommand(title: "今日安排", prompt: "请汇总我今天需要注意的安排：用药、打针、回诊和其他提醒。", icon: "calendar.badge.clock"),
                 QuickCommand(title: "记录妊娠三项", prompt: "我今天做了妊娠三项，帮我记录", icon: "testtube.2"),
                 QuickCommand(title: "新增补剂", prompt: "晚饭后我要吃钙片，帮我记录", icon: "pills"),
                 QuickCommand(title: "加复查预约", prompt: "帮我加一个复查预约，时间是明天上午9点", icon: "calendar"),
                 QuickCommand(title: "明天吃什么药", prompt: "明天吃什么药", icon: "list.bullet.clipboard"),
-                QuickCommand(title: "调整提醒时间", prompt: "把晚饭后提醒改成晚上7点", icon: "alarm"),
-                QuickCommand(title: "记录身体感受", prompt: "我今天有点恶心，帮我记录一下", icon: "square.and.pencil")
+                QuickCommand(title: "调整提醒时间", prompt: "把晚饭后提醒改成晚上7点", icon: "alarm")
             ]
         case .middle:
             return [
+                QuickCommand(title: "今日安排", prompt: "请汇总我今天需要注意的安排：用药、打针、回诊和其他提醒。", icon: "calendar.badge.clock"),
                 QuickCommand(title: "记录NT/唐筛", prompt: "我今天做了NT或唐筛，帮我记录", icon: "chart.bar"),
                 QuickCommand(title: "加产检预约", prompt: "帮我新增一次产检预约，下周三上午9点", icon: "cross.case"),
                 QuickCommand(title: "新增补剂", prompt: "帮我新增一个孕期补剂提醒", icon: "pills"),
                 QuickCommand(title: "明天吃什么药", prompt: "明天吃什么药", icon: "list.bullet.clipboard"),
-                QuickCommand(title: "调整提醒时间", prompt: "把睡前提醒改成22点", icon: "alarm"),
-                QuickCommand(title: "记录睡眠", prompt: "我昨晚睡得不太好，帮我记录", icon: "moon.stars")
+                QuickCommand(title: "调整提醒时间", prompt: "把睡前提醒改成22点", icon: "alarm")
             ]
         case .late:
             return [
+                QuickCommand(title: "今日安排", prompt: "请汇总我今天需要注意的安排：用药、打针、回诊和其他提醒。", icon: "calendar.badge.clock"),
                 QuickCommand(title: "记录胎动", prompt: "我想记录今天胎动情况", icon: "figure.and.child.holdinghands"),
                 QuickCommand(title: "加产检预约", prompt: "帮我新增一次产检预约", icon: "cross.case"),
                 QuickCommand(title: "新增补剂", prompt: "帮我新增一个睡前补剂提醒", icon: "pills"),
                 QuickCommand(title: "明天吃什么药", prompt: "明天吃什么药", icon: "list.bullet.clipboard"),
-                QuickCommand(title: "调整提醒时间", prompt: "把晚饭后提醒改成晚上7点20", icon: "alarm"),
-                QuickCommand(title: "记录不适", prompt: "我今天有点宫缩感，帮我记录一下", icon: "square.and.pencil")
+                QuickCommand(title: "调整提醒时间", prompt: "把晚饭后提醒改成晚上7点20", icon: "alarm")
             ]
         }
     }
@@ -2077,6 +2144,40 @@ final class PregnancyStore: ObservableObject {
         }
     }
 
+    private func clearSeededSampleDataIfNeeded() {
+        guard state.onboardingRequiredAtLeastOnce else { return }
+        let hasLegacySeedName = state.profile.name.trimmingCharacters(in: .whitespacesAndNewlines) == "余丽佳"
+        let hasLegacyMedicationIDs = state.medications.contains { $0.id.hasPrefix("med") }
+        let hasLegacyAppointmentID = state.appointments.contains { $0.id.hasPrefix("appt-2026") }
+        guard hasLegacySeedName || hasLegacyMedicationIDs || hasLegacyAppointmentID else { return }
+
+        let today = Date()
+        state.profile = Profile(
+            name: "",
+            gender: "女",
+            birthDate: Calendar.current.date(byAdding: .year, value: -28, to: today) ?? today,
+            lastPeriodDate: Calendar.current.date(byAdding: .day, value: -42, to: today) ?? today,
+            ivfTransferDate: today,
+            firstPositiveDate: today,
+            stepsGoal: 8000,
+            waterGoalML: 1200,
+            heightCM: nil,
+            weightKG: nil,
+            allergyHistory: nil,
+            doctorContact: nil
+        )
+        state.medications = []
+        state.appointments = []
+        state.labRecords = []
+        state.checkRecords = []
+        state.aiConversation = []
+        state.aiPendingActions = []
+        state.homeChatMessages = []
+        state.homeSummaryCache = nil
+        state.completedDailyTaskIDs = []
+        state.todayNotes = []
+    }
+
     private func migrateLegacyCheckRecordsIfNeeded() {
         guard state.checkRecords == nil || state.checkRecords?.isEmpty == true else { return }
         guard !state.labRecords.isEmpty else {
@@ -2148,84 +2249,30 @@ final class PregnancyStore: ObservableObject {
     }
 
     private static func seedState() -> AppState {
-        let calendar = Calendar.current
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd"
-
-        func date(_ text: String) -> Date {
-            formatter.date(from: text) ?? Date()
-        }
-
+        let today = Date()
         let profile = Profile(
-            name: "余丽佳",
+            name: "",
             gender: "女",
-            birthDate: date("1989-08-19"),
-            lastPeriodDate: date("2026-01-16"),
-            ivfTransferDate: date("2026-01-30"),
-            firstPositiveDate: date("2026-02-09"),
-            stepsGoal: 10_000,
-            waterGoalML: 1_000
+            birthDate: Calendar.current.date(byAdding: .year, value: -28, to: today) ?? today,
+            lastPeriodDate: Calendar.current.date(byAdding: .day, value: -42, to: today) ?? today,
+            ivfTransferDate: today,
+            firstPositiveDate: today,
+            stepsGoal: 8000,
+            waterGoalML: 1200
         )
 
-        let medications: [MedicationItem] = [
-            MedicationItem(id: "med1", period: .wakeUp, name: "优甲乐", dosage: "1片", note: "每日一片"),
-            MedicationItem(id: "med2", period: .wakeUp, name: "安琪坦", dosage: "塞1粒", note: ""),
-
-            MedicationItem(id: "med3", period: .afterBreakfast, name: "爱乐维", dosage: "1粒", note: ""),
-            MedicationItem(id: "med4", period: .afterBreakfast, name: "维生素D", dosage: "5粒", note: ""),
-            MedicationItem(id: "med5", period: .afterBreakfast, name: "鱼油", dosage: "2粒", note: ""),
-            MedicationItem(id: "med6", period: .afterBreakfast, name: "免疫球蛋白", dosage: "2粒", note: ""),
-            MedicationItem(id: "med7", period: .afterBreakfast, name: "地屈孕酮", dosage: "2粒", note: ""),
-            MedicationItem(id: "med8", period: .afterBreakfast, name: "小红片", dosage: "1片", note: ""),
-
-            MedicationItem(id: "med9", period: .afterDinner, name: "DHA", dosage: "1粒", note: ""),
-            MedicationItem(id: "med10", period: .afterDinner, name: "地屈孕酮", dosage: "2片", note: ""),
-            MedicationItem(id: "med11", period: .afterDinner, name: "补佳乐", dosage: "1片", note: ""),
-            MedicationItem(id: "med12", period: .afterDinner, name: "小红片", dosage: "1片", note: ""),
-            MedicationItem(id: "med13", period: .afterDinner, name: "肝素", dosage: "打一针", note: ""),
-
-            MedicationItem(id: "med14", period: .beforeSleep, name: "安琪坦", dosage: "塞2粒", note: "")
-        ]
-
-        let habits = [
+        let habits: [DailyHabitItem] = [
             DailyHabitItem(id: "steps", title: "每日走够 10000 步"),
             DailyHabitItem(id: "water", title: "每日喝够 1L 水")
         ]
 
-        let appointments = [
-            AppointmentItem(
-                id: "appt-2026-02-21",
-                title: "回诊（妊娠三项第三次）",
-                dueDate: date("2026-02-21"),
-                detail: "检查孕酮、雌二醇、β-hCG",
-                isDone: false
-            )
-        ]
-
         let injectionPlan = InjectionPlan(
             title: "促绒毛激素注射",
-            startDate: date("2026-02-17"),
-            endDate: date("2026-02-21"),
+            startDate: today,
+            endDate: today,
             intervalDays: 2,
-            detail: "隔一天打一针（2026-02-17 / 19 / 21）"
+            detail: "如需注射计划，可在记录中新增提醒。"
         )
-
-        let records = [
-            LabRecord(
-                id: "lab-2026-02-13",
-                checkTime: calendar.date(bySettingHour: 9, minute: 41, second: 22, of: date("2026-02-13")) ?? date("2026-02-13"),
-                progesterone: 99.70,
-                estradiol: 2194.64,
-                hcg: 1762.75
-            ),
-            LabRecord(
-                id: "lab-2026-02-16",
-                checkTime: calendar.date(bySettingHour: 12, minute: 29, second: 24, of: date("2026-02-16")) ?? date("2026-02-16"),
-                progesterone: 97.70,
-                estradiol: 1602.16,
-                hcg: 7622.60
-            )
-        ]
 
         let formatter2 = DateFormatter()
         formatter2.dateFormat = "yyyy-MM-dd"
@@ -2233,27 +2280,14 @@ final class PregnancyStore: ObservableObject {
 
         return AppState(
             profile: profile,
-            medications: medications,
+            medications: [],
             dailyHabits: habits,
             extraDailyItems: [],
             todayNotes: [],
-            appointments: appointments,
+            appointments: [],
             injectionPlan: injectionPlan,
-            labRecords: records,
-            checkRecords: records.map {
-                CheckRecord(
-                    id: $0.id,
-                    type: .pregnancyPanel,
-                    checkTime: $0.checkTime,
-                    metrics: [
-                        CheckMetric(key: "hcg", label: "HCG", valueText: String(format: "%.2f", $0.hcg), unit: "mIU/ml", referenceLowText: nil, referenceHighText: nil),
-                        CheckMetric(key: "progesterone", label: "孕酮 P", valueText: String(format: "%.2f", $0.progesterone), unit: "ng/ml", referenceLowText: nil, referenceHighText: nil),
-                        CheckMetric(key: "estradiol", label: "E2", valueText: String(format: "%.2f", $0.estradiol), unit: "pg/ml", referenceLowText: nil, referenceHighText: nil)
-                    ],
-                    note: "",
-                    source: .manual
-                )
-            },
+            labRecords: [],
+            checkRecords: [],
             completionDateKey: todayKey,
             completedDailyTaskIDs: [],
             dailyCheckin: DailyHealthCheckin(
@@ -2268,7 +2302,7 @@ final class PregnancyStore: ObservableObject {
             aiConfig: AIConfig(
                 baseURL: "",
                 apiKey: "",
-                model: AIConfigProvider.defaultModel
+                model: AIConfigProvider.fallbackModel
             ),
             reminderConfig: ReminderConfig(
                 wakeUpTime: "07:00",
@@ -2276,7 +2310,8 @@ final class PregnancyStore: ObservableObject {
                 lunchTime: "12:30",
                 dinnerTime: "18:30",
                 sleepTime: "22:30",
-                minutesBefore: 15
+                minutesBefore: 15,
+                enableSystemReminders: false
             ),
             aiConversation: [],
             aiLongTermMemory: "",

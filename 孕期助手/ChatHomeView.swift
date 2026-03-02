@@ -1,6 +1,40 @@
 import SwiftUI
+import UIKit
 
 struct ChatHomeView: View {
+    private enum OCRProcessingState: Equatable {
+        case idle
+        case processing
+        case failed(String)
+    }
+
+    private enum VoicePressState: Equatable {
+        case idle
+        case recording
+        case canceling
+    }
+
+    private enum ImageSource: Identifiable {
+        case camera
+        case library
+
+        var id: Int {
+            switch self {
+            case .camera: return 1
+            case .library: return 2
+            }
+        }
+
+        var sourceType: UIImagePickerController.SourceType {
+            switch self {
+            case .camera: return .camera
+            case .library: return .photoLibrary
+            }
+        }
+    }
+
+    let tabBarVisible: Bool
+
     @EnvironmentObject private var store: PregnancyStore
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -10,13 +44,27 @@ struct ChatHomeView: View {
     @State private var showConfirm = false
     @State private var errorText = ""
     @State private var isTyping = false
+    @State private var typingStageText = "小助手正在思考…"
     @State private var sessionAnchorIndex = 0
     @State private var didInitializeSessionAnchor = false
     @State private var openingLine = ""
     @State private var isRefreshingOpeningSummary = false
+    @State private var failedMessageID: String?
+    @State private var failedUserInput: String?
+    @State private var isRetryingFailedMessage = false
+    @State private var didTriggerBackendWarmup = false
+    @State private var voicePressState: VoicePressState = .idle
+    @State private var voiceDragOffset: CGSize = .zero
+    @State private var liveVoiceTranscript = ""
+    @State private var activeVoiceSessionID: UUID?
+    @State private var ocrProcessingState: OCRProcessingState = .idle
+    @State private var showImageSourceDialog = false
+    @State private var imageSource: ImageSource?
     @FocusState private var inputFocused: Bool
+    @StateObject private var speechInput = SpeechInputService()
 
     private let bottomAnchor = "chat-bottom"
+    private let voiceCancelThreshold: CGFloat = 70
     private let chatService = AIBackendChatService()
     private let executableIntents: Set<String> = [
         "create_medication",
@@ -24,6 +72,14 @@ struct ChatHomeView: View {
         "create_reminder",
         "update_reminder_time"
     ]
+
+    private var composerBottomInset: CGFloat {
+        tabBarVisible ? AppLayout.tabBarOccupiedHeight : 0
+    }
+
+    private var isRecordingVoice: Bool {
+        voicePressState != .idle
+    }
 
     var body: some View {
         NavigationStack {
@@ -50,6 +106,7 @@ struct ChatHomeView: View {
                         store.clearExpiredHomeSummaryCacheIfNeeded()
                         openingLine = immediateOpeningLine()
                         initializeSessionIfNeeded()
+                        triggerBackendWarmupIfNeeded()
                         Task { await refreshOpeningLineWithAI(force: false) }
                         scrollToBottom(proxy)
                     }
@@ -70,8 +127,11 @@ struct ChatHomeView: View {
                 topFixedInfoBar
             }
             .safeAreaInset(edge: .bottom, spacing: 0) {
-                composerDock
-                    .padding(.bottom, AppLayout.mainTabBarHeight)
+                VStack(spacing: 0) {
+                    composerDock
+                    Color.clear
+                        .frame(height: composerBottomInset)
+                }
             }
             .font(AppTheme.bodyFont)
             .toolbar(.hidden, for: .navigationBar)
@@ -91,6 +151,29 @@ struct ChatHomeView: View {
                 }
             } message: {
                 Text(pendingSummary())
+            }
+            .confirmationDialog("上传检查单", isPresented: $showImageSourceDialog, titleVisibility: .visible) {
+                Button("拍照") {
+                    guard UIImagePickerController.isSourceTypeAvailable(.camera) else {
+                        errorText = "当前设备不支持拍照，请改用相册上传。"
+                        return
+                    }
+                    imageSource = .camera
+                }
+                Button("从相册选择") {
+                    imageSource = .library
+                }
+                Button("取消", role: .cancel) { }
+            }
+            .sheet(item: $imageSource) { source in
+                AppImagePicker(sourceType: source.sourceType) { image in
+                    Task {
+                        await processPickedImage(image)
+                    }
+                }
+            }
+            .onDisappear {
+                resetVoiceState(stopRecognition: true)
             }
         }
     }
@@ -113,13 +196,31 @@ struct ChatHomeView: View {
                         }
                         Text(timeLabel(message.createdAt))
                             .font(.caption2)
-                            .foregroundStyle(AppTheme.textHint)
-                            .padding(.leading, 34)
+                            .foregroundStyle(AppTheme.textHint.opacity(0.7))
+                            .padding(.leading, 38)
                     } else {
                         UserBubble {
                             Text(message.text)
                                 .font(.subheadline)
                                 .foregroundStyle(.white)
+                        }
+                        if message.deliveryStatus == .failed {
+                            HStack(spacing: 8) {
+                                Text(message.deliveryError ?? "发送失败")
+                                    .font(.caption2)
+                                    .foregroundStyle(AppTheme.bannerError)
+                                Button {
+                                    Task {
+                                        await retryFailedMessage(messageID: message.id, input: message.text)
+                                    }
+                                } label: {
+                                    Text((isRetryingFailedMessage && failedMessageID == message.id) ? "重试中..." : "重试发送")
+                                        .font(.caption2.weight(.semibold))
+                                }
+                                .buttonStyle(.plain)
+                                .disabled(isTyping || (isRetryingFailedMessage && failedMessageID == message.id))
+                            }
+                            .frame(maxWidth: .infinity, alignment: .trailing)
                         }
                         Text(timeLabel(message.createdAt))
                             .font(.caption2)
@@ -134,7 +235,7 @@ struct ChatHomeView: View {
                     HStack(spacing: 8) {
                         ProgressView()
                             .controlSize(.small)
-                        Text("小助手正在思考…")
+                        Text(typingStageText)
                             .font(.caption)
                             .foregroundStyle(AppTheme.textSecondary)
                     }
@@ -170,59 +271,189 @@ struct ChatHomeView: View {
     }
 
     private var composerDock: some View {
-        VStack(spacing: 6) {
-            QuickCommandStrip(commands: Array(store.quickCommandPrompts().prefix(6))) { command in
-                inputText = command.prompt
-                inputFocused = true
+        VStack(spacing: 0) {
+            // 快捷命令条 - 增加间距
+            if tabBarVisible {
+                QuickCommandStrip(commands: Array(store.quickCommandPrompts().prefix(6))) { command in
+                    handleQuickCommandTap(command)
+                }
+                .padding(.horizontal, 20)
+                .padding(.top, 16)
+                .padding(.bottom, 12)
             }
-            .padding(.horizontal)
 
+            // 输入区域 - 参考微信/飞书设计
             HStack(alignment: .bottom, spacing: 10) {
-                TextField("像聊天一样告诉我：今晚饭后吃钙片", text: $inputText, axis: .vertical)
-                    .lineLimit(1...3)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 10)
-                    .background(AppTheme.cardAlt)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 12)
-                            .stroke(AppTheme.border, lineWidth: 1)
-                    )
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
-                    .focused($inputFocused)
+                // 语音按钮
+                pressToTalkButton
 
+                // 相机按钮
+                Button {
+                    showImageSourceDialog = true
+                } label: {
+                    Image(systemName: "camera.fill")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .frame(width: 36, height: 36)
+                        .background(AppTheme.statusInfo)
+                        .clipShape(Circle())
+                }
+                .disabled(isTyping)
+                .accessibilityLabel("上传图片")
+                .accessibilityHint("支持拍照或从相册选择")
+
+                // 输入框 - 更圆润的设计
+                TextField("", text: $inputText, axis: .vertical)
+                    .placeholder(when: inputText.isEmpty) {
+                        Text("像聊天一样告诉我：今晚饭后吃钙片")
+                            .foregroundStyle(AppTheme.textHint.opacity(0.7))
+                    }
+                    .lineLimit(1...5)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 10)
+                    .background(
+                        RoundedRectangle(cornerRadius: 20)
+                            .fill(AppTheme.cardAlt)
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 20)
+                            .strokeBorder(
+                                inputFocused ? AppTheme.actionPrimary.opacity(0.4) : AppTheme.border.opacity(0.3),
+                                lineWidth: inputFocused ? 1.5 : 1
+                            )
+                    )
+                    .focused($inputFocused)
+                    .animation(.easeInOut(duration: 0.2), value: inputFocused)
+
+                // 发送按钮 - iMessage 风格
                 Button {
                     Task { await sendMessage() }
                 } label: {
-                    Image(systemName: "paperplane.fill")
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(.white)
-                        .frame(width: 44, height: 44)
-                        .background(
-                            (isTyping || inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                            ? AppTheme.textSecondary : AppTheme.actionPrimary
-                        )
-                        .clipShape(Circle())
+                    ZStack {
+                        Circle()
+                            .fill(
+                                (isTyping || inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                                ? AppTheme.textSecondary.opacity(0.3)
+                                : LinearGradient(
+                                    colors: [AppTheme.actionPrimary, Color(hex: "D85545")],
+                                    startPoint: .topLeading,
+                                    endPoint: .bottomTrailing
+                                )
+                            )
+                            .frame(width: 36, height: 36)
+
+                        Image(systemName: isTyping ? "ellipsis" : "arrow.up")
+                            .font(.system(size: 16, weight: .bold))
+                            .foregroundStyle(.white)
+                            .symbolEffect(.pulse, isActive: isTyping)
+                    }
+                    .shadow(
+                        color: (isTyping || inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                            ? Color.clear
+                            : AppTheme.actionPrimary.opacity(0.25),
+                        radius: 6,
+                        x: 0,
+                        y: 3
+                    )
+                    .scaleEffect(isTyping ? 0.92 : 1.0)
+                    .animation(.spring(response: 0.25, dampingFraction: 0.65), value: isTyping)
                 }
                 .disabled(isTyping || inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 .accessibilityLabel("发送消息")
                 .accessibilityHint("发送当前输入内容")
                 .accessibilityValue(isTyping ? "发送中" : "可发送")
             }
-            .padding(.horizontal)
+            .padding(.horizontal, 16)
+            .padding(.bottom, 16)
+
+            // 状态提示
+            if isRecordingVoice {
+                Text(voicePressState == .canceling ? "松开取消" : "松开发送")
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(voicePressState == .canceling ? AppTheme.statusError : AppTheme.statusInfo)
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 8)
+            }
+
+            if case .processing = ocrProcessingState {
+                Text("图片识别中，请稍候…")
+                    .font(.footnote)
+                    .foregroundStyle(AppTheme.textSecondary)
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 8)
+            }
 
             if !errorText.isEmpty {
-                Text(errorText)
-                    .font(.footnote)
-                    .foregroundStyle(.red)
-                    .padding(.horizontal)
+                HStack(spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                    Text(errorText)
+                        .font(.footnote)
+                        .foregroundStyle(.red)
+                        .lineLimit(2)
+                }
+                .padding(.horizontal, 16)
+                .padding(.bottom, 12)
+                .transition(.move(edge: .top).combined(with: .opacity))
             }
         }
-        .padding(.top, 4)
-        .padding(.bottom, 4)
-        .frame(maxWidth: .infinity)
         .background(
             AppTheme.card
+                .shadow(color: Color.black.opacity(0.05), radius: 20, x: 0, y: -10)
+                .ignoresSafeArea(edges: .bottom)
         )
+    }
+
+    private var pressToTalkButton: some View {
+        let dragGesture = DragGesture(minimumDistance: 0)
+            .onChanged { value in
+                if voicePressState == .idle {
+                    beginPressToTalk()
+                }
+                updatePressToTalkDrag(value.translation.height)
+            }
+            .onEnded { _ in
+                endPressToTalk()
+            }
+
+        return ZStack {
+            Circle()
+                .fill(voiceButtonBackgroundColor)
+                .frame(width: 36, height: 36)
+            Image(systemName: voiceButtonSymbol)
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(.white)
+        }
+        .opacity(isTyping ? 0.55 : 1)
+        .allowsHitTesting(!isTyping)
+        .gesture(dragGesture)
+        .accessibilityElement()
+        .accessibilityLabel("按住说话")
+        .accessibilityHint("按住录音，松开发送；上滑取消")
+        .accessibilityValue(voicePressState == .canceling ? "将取消" : (isRecordingVoice ? "录音中" : "待机"))
+    }
+
+    private var voiceButtonSymbol: String {
+        switch voicePressState {
+        case .idle:
+            return "mic.fill"
+        case .recording:
+            return "waveform"
+        case .canceling:
+            return "xmark"
+        }
+    }
+
+    private var voiceButtonBackgroundColor: Color {
+        switch voicePressState {
+        case .idle:
+            return AppTheme.statusInfo
+        case .recording:
+            return AppTheme.actionPrimary
+        case .canceling:
+            return AppTheme.statusError
+        }
     }
 
     private func initializeSessionIfNeeded() {
@@ -280,68 +511,283 @@ struct ChatHomeView: View {
         return store.homeOpeningLine()
     }
 
+    private func triggerBackendWarmupIfNeeded() {
+        guard !didTriggerBackendWarmup else { return }
+        let config = store.currentAIConfig()
+        guard !config.baseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        didTriggerBackendWarmup = true
+        Task {
+            await chatService.warmup(config: config)
+        }
+    }
+
     private func sendMessage() async {
         errorText = ""
         let trimmed = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
-
-        chatMessages.append(HomeChatMessage(role: .user, kind: .text, text: trimmed))
         inputText = ""
+        await submitUserInput(trimmed)
+    }
+
+    private func submitUserInput(_ input: String) async {
+        let normalized = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else { return }
+        guard !isTyping else {
+            inputText = normalized
+            return
+        }
+
+        let message = HomeChatMessage(
+            role: .user,
+            kind: .text,
+            text: normalized,
+            deliveryStatus: .sent,
+            deliveryError: nil
+        )
+        chatMessages.append(message)
+        store.saveHomeChatMessages(chatMessages)
+        await sendUserMessage(normalized, messageID: message.id)
+    }
+
+    private func handleQuickCommandTap(_ command: QuickCommand) {
+        let prompt = command.prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !prompt.isEmpty else { return }
+        if command.title == "今日安排" {
+            Task {
+                await submitUserInput(prompt)
+            }
+        } else {
+            inputText = prompt
+            inputFocused = true
+        }
+    }
+
+    private func beginPressToTalk() {
+        guard !isTyping else { return }
+        guard voicePressState == .idle else { return }
+
+        errorText = ""
+        liveVoiceTranscript = ""
+        voiceDragOffset = .zero
+        voicePressState = .recording
+
+        let sessionID = UUID()
+        activeVoiceSessionID = sessionID
+
+        Task {
+            do {
+                try await speechInput.startRecognition(
+                    onPartial: { partial in
+                        guard activeVoiceSessionID == sessionID else { return }
+                        liveVoiceTranscript = partial
+                    },
+                    onFinal: { finalText in
+                        guard activeVoiceSessionID == sessionID else { return }
+                        liveVoiceTranscript = finalText
+                    }
+                )
+                if activeVoiceSessionID != sessionID {
+                    speechInput.stopRecognition()
+                }
+            } catch {
+                guard activeVoiceSessionID == sessionID else { return }
+                resetVoiceState(stopRecognition: true)
+                let message = (error as? LocalizedError)?.errorDescription ?? "语音输入失败，请稍后重试。"
+                errorText = message
+            }
+        }
+    }
+
+    private func updatePressToTalkDrag(_ translationY: CGFloat) {
+        guard voicePressState != .idle else { return }
+        voiceDragOffset = CGSize(width: 0, height: translationY)
+        if translationY <= -voiceCancelThreshold {
+            voicePressState = .canceling
+        } else {
+            voicePressState = .recording
+        }
+    }
+
+    private func endPressToTalk() {
+        guard voicePressState != .idle else { return }
+
+        let shouldCancel = voicePressState == .canceling
+        let finalTranscript = liveVoiceTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
+        resetVoiceState(stopRecognition: true)
+
+        guard !shouldCancel else { return }
+        guard !finalTranscript.isEmpty else {
+            errorText = "未识别到语音内容，请重试。"
+            return
+        }
+
+        Task {
+            await submitUserInput(finalTranscript)
+        }
+    }
+
+    private func resetVoiceState(stopRecognition: Bool) {
+        if stopRecognition {
+            speechInput.stopRecognition()
+        }
+        activeVoiceSessionID = nil
+        voicePressState = .idle
+        voiceDragOffset = .zero
+        liveVoiceTranscript = ""
+    }
+
+    private func processPickedImage(_ image: UIImage) async {
+        guard !isTyping else { return }
+        errorText = ""
+        ocrProcessingState = .processing
+        do {
+            let recognized = try await ImageOCRService.recognizeText(from: image)
+            ocrProcessingState = .idle
+            let prompt = "以下是我上传图片识别出的文本，请帮我整理关键提醒并给出下一步建议：\n\(recognized)"
+            await submitUserInput(prompt)
+        } catch {
+            let message = (error as? LocalizedError)?.errorDescription ?? "图片识别失败，请稍后重试。"
+            ocrProcessingState = .failed(message)
+            errorText = message
+        }
+    }
+
+    private func retryFailedMessage(messageID: String, input: String) async {
+        guard !isTyping else { return }
+        let sourceInput = input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? (failedUserInput ?? "") : input
+        guard !sourceInput.isEmpty else { return }
+        failedMessageID = messageID
+        failedUserInput = sourceInput
+        isRetryingFailedMessage = true
+        defer { isRetryingFailedMessage = false }
+
+        await sendUserMessage(sourceInput, messageID: messageID)
+    }
+
+    private func sendUserMessage(_ input: String, messageID: String) async {
         isTyping = true
+        typingStageText = stageText(for: .connecting)
+        defer {
+            isTyping = false
+            typingStageText = stageText(for: .finished)
+        }
 
         let config = store.currentAIConfig()
         guard !config.baseURL.isEmpty else {
-            errorText = "AI 服务未配置。请在应用配置中设置 AI_BACKEND_URL（调试可用环境变量覆盖）。"
-            isTyping = false
+            markMessageFailed(
+                id: messageID,
+                input: input,
+                reason: "AI 服务未配置。请设置 AI_BACKEND_URL。"
+            )
             return
         }
 
         do {
-            store.appendAIMessage(role: "user", content: trimmed)
-            let jsonText = try await chatService.send(
+            let jsonText = try await chatService.sendWithRecovery(
                 config: config,
                 context: store.aiContextSummary(),
                 history: store.aiConversation(),
-                userInput: trimmed
-            )
+                userInput: input
+            ) { stage in
+                typingStageText = stageText(for: stage)
+            }
+            store.appendAIMessage(role: "user", content: input)
             store.appendAIMessage(role: "assistant", content: jsonText)
 
-            if let action = AIParse.parse(jsonText) {
-                let normalizedIntent = normalizedIntent(from: action.intent)
-                if normalizedIntent == "unknown", action.intent != "unknown" {
-                    chatMessages.append(
-                        HomeChatMessage(
-                            role: .assistant,
-                            kind: .text,
-                            text: "这个操作我现在还不支持，我先帮你走现有流程：例如“晚饭后吃钙片”或“明天吃什么药”。"
-                        )
-                    )
-                } else if action.needClarify {
-                    chatMessages.append(HomeChatMessage(role: .assistant, kind: .text, text: action.clarifyQuestion.isEmpty ? "我还需要一点信息～" : action.clarifyQuestion))
-                } else if normalizedIntent == "query_schedule" {
-                    chatMessages.append(HomeChatMessage(role: .assistant, kind: .text, text: scheduleReply(for: action, userInput: trimmed)))
-                } else if normalizedIntent == "unknown" {
-                    let reply = action.assistantReply.isEmpty ? "我在呢～" : action.assistantReply
-                    chatMessages.append(HomeChatMessage(role: .assistant, kind: .text, text: reply))
-                } else {
-                    let pending = AIPendingAction(
-                        id: UUID().uuidString,
-                        intent: normalizedIntent,
-                        slots: action.slots,
-                        createdAt: Date()
-                    )
-                    pendingAction = pending
-                    showConfirm = true
-                    store.appendPendingAction(pending)
-                }
-            } else {
-                chatMessages.append(HomeChatMessage(role: .assistant, kind: .text, text: "我没能解析出结构化指令，可以换个说法吗？比如“晚饭后吃钙片”或“明天吃什么药”。"))
+            markMessageSent(id: messageID)
+            applyAssistantResponse(jsonText, userInput: input)
+
+            if failedMessageID == messageID {
+                failedMessageID = nil
+                failedUserInput = nil
             }
+            errorText = ""
         } catch {
-            errorText = "请求失败：\(error.localizedDescription)"
+            let mapped = AIRequestError.map(error)
+            markMessageFailed(id: messageID, input: input, reason: mapped.userMessage)
+        }
+    }
+
+    private func stageText(for stage: AIRequestStage) -> String {
+        switch stage {
+        case .connecting:
+            return "正在连接 AI 服务…"
+        case let .retrying(current, total):
+            return "网络波动，正在第 \(current)/\(total) 次重试…"
+        case .compensating:
+            return "正在执行补偿重试…"
+        case .finished:
+            return "小助手正在思考…"
+        }
+    }
+
+    private func applyAssistantResponse(_ jsonText: String, userInput: String) {
+        if let action = AIParse.parse(jsonText) {
+            let normalizedIntent = normalizedIntent(from: action.intent)
+            if normalizedIntent == "unknown", action.intent != "unknown" {
+                chatMessages.append(
+                    HomeChatMessage(
+                        role: .assistant,
+                        kind: .text,
+                        text: "这个操作我现在还不支持，我先帮你走现有流程：例如“晚饭后吃钙片”或“明天吃什么药”。"
+                    )
+                )
+            } else if action.needClarify {
+                chatMessages.append(
+                    HomeChatMessage(
+                        role: .assistant,
+                        kind: .text,
+                        text: action.clarifyQuestion.isEmpty ? "我还需要一点信息～" : action.clarifyQuestion
+                    )
+                )
+            } else if normalizedIntent == "query_schedule" {
+                chatMessages.append(HomeChatMessage(role: .assistant, kind: .text, text: scheduleReply(for: action, userInput: userInput)))
+            } else if normalizedIntent == "unknown" {
+                let reply = action.assistantReply.isEmpty ? "我在呢～" : action.assistantReply
+                chatMessages.append(HomeChatMessage(role: .assistant, kind: .text, text: reply))
+            } else {
+                let pending = AIPendingAction(
+                    id: UUID().uuidString,
+                    intent: normalizedIntent,
+                    slots: action.slots,
+                    createdAt: Date()
+                )
+                pendingAction = pending
+                showConfirm = true
+                store.appendPendingAction(pending)
+            }
+        } else {
+            chatMessages.append(
+                HomeChatMessage(
+                    role: .assistant,
+                    kind: .text,
+                    text: "我没能解析出结构化指令，可以换个说法吗？比如“晚饭后吃钙片”或“明天吃什么药”。"
+                )
+            )
+        }
+    }
+
+    private func markMessageFailed(id: String, input: String, reason: String) {
+        guard let index = chatMessages.firstIndex(where: { $0.id == id }) else {
+            errorText = reason
+            failedMessageID = id
+            failedUserInput = input
+            return
         }
 
-        isTyping = false
+        chatMessages[index].deliveryStatus = .failed
+        chatMessages[index].deliveryError = reason
+        store.saveHomeChatMessages(chatMessages)
+        errorText = reason
+        failedMessageID = id
+        failedUserInput = input
+    }
+
+    private func markMessageSent(id: String) {
+        guard let index = chatMessages.firstIndex(where: { $0.id == id }) else { return }
+        chatMessages[index].deliveryStatus = .sent
+        chatMessages[index].deliveryError = nil
+        store.saveHomeChatMessages(chatMessages)
     }
 
     private func scrollToBottom(_ proxy: ScrollViewProxy) {
@@ -529,25 +975,37 @@ struct AssistantBubble<Content: View>: View {
 
     var body: some View {
         HStack(alignment: .bottom, spacing: 8) {
+            // 助手头像 - 更小更精致
             Circle()
-                .fill(AppTheme.accentSoft)
-                .frame(width: 24, height: 24)
+                .fill(
+                    LinearGradient(
+                        colors: [Color(hex: "FCEEE3"), Color(hex: "F9DCC8")],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+                .frame(width: 32, height: 32)
                 .overlay(
                     Image(systemName: "sparkles")
-                        .font(.caption2)
+                        .font(.system(size: 14, weight: .semibold))
                         .foregroundStyle(AppTheme.actionPrimary)
                 )
+                .shadow(color: AppTheme.actionPrimary.opacity(0.12), radius: 4, x: 0, y: 2)
 
+            // 气泡 - 微信风格
             content
-                .padding(12)
-                .background(AppTheme.card)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 16)
-                        .stroke(AppTheme.border, lineWidth: 1)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+                .background(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .fill(AppTheme.card)
                 )
-                .clipShape(RoundedRectangle(cornerRadius: 16))
-                .shadow(color: Color.black.opacity(0.05), radius: 6, x: 0, y: 2)
-                .frame(maxWidth: 300, alignment: .leading)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .strokeBorder(AppTheme.border.opacity(0.4), lineWidth: 0.5)
+                )
+                .shadow(color: Color.black.opacity(0.04), radius: 4, x: 0, y: 2)
+                .frame(maxWidth: 260, alignment: .leading)
 
             Spacer()
         }
@@ -564,12 +1022,22 @@ struct UserBubble<Content: View>: View {
     var body: some View {
         HStack {
             Spacer()
+            // 用户气泡 - 微信绿色风格
             content
-                .padding(12)
-                .background(AppTheme.actionPrimary)
-                .clipShape(RoundedRectangle(cornerRadius: 16))
-                .shadow(color: Color.black.opacity(0.08), radius: 6, x: 0, y: 2)
-                .frame(maxWidth: 300, alignment: .trailing)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+                .background(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .fill(
+                            LinearGradient(
+                                colors: [Color(hex: "95EC69"), Color(hex: "7FD858")],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            )
+                        )
+                )
+                .shadow(color: Color(hex: "7FD858").opacity(0.2), radius: 4, x: 0, y: 2)
+                .frame(maxWidth: 260, alignment: .trailing)
         }
     }
 }
@@ -657,7 +1125,49 @@ struct QuickActionChip: View {
     }
 }
 
+struct AppImagePicker: UIViewControllerRepresentable {
+    let sourceType: UIImagePickerController.SourceType
+    let onPicked: (UIImage) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+
+    func makeUIViewController(context: Context) -> UIImagePickerController {
+        let picker = UIImagePickerController()
+        picker.sourceType = sourceType
+        picker.allowsEditing = false
+        picker.delegate = context.coordinator
+        return picker
+    }
+
+    func updateUIViewController(_ uiViewController: UIImagePickerController, context: Context) { }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onPicked: onPicked, dismiss: dismiss)
+    }
+
+    final class Coordinator: NSObject, UINavigationControllerDelegate, UIImagePickerControllerDelegate {
+        private let onPicked: (UIImage) -> Void
+        private let dismiss: DismissAction
+
+        init(onPicked: @escaping (UIImage) -> Void, dismiss: DismissAction) {
+            self.onPicked = onPicked
+            self.dismiss = dismiss
+        }
+
+        func imagePickerController(_ picker: UIImagePickerController, didFinishPickingMediaWithInfo info: [UIImagePickerController.InfoKey: Any]) {
+            if let image = info[.originalImage] as? UIImage {
+                onPicked(image)
+            }
+            dismiss()
+        }
+
+        func imagePickerControllerDidCancel(_ picker: UIImagePickerController) {
+            dismiss()
+        }
+    }
+}
+
 #Preview {
-    ChatHomeView()
+    ChatHomeView(tabBarVisible: true)
         .environmentObject(PregnancyStore())
 }
