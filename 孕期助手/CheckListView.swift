@@ -9,17 +9,42 @@ enum RecordSegment: String, CaseIterable, Identifiable {
 }
 
 struct CheckListView: View {
-    private struct MedicationGroup: Identifiable {
-        var id: String
-        var name: String
+    private struct MedicationPeriodSection: Identifiable {
+        var period: TimePeriod
+        var displayTime: String
         var items: [MedicationItem]
+        var doneCount: Int
+        var pendingCount: Int
+        var isPast: Bool
 
-        var periods: [TimePeriod] {
-            Array(Set(items.map(\.period))).sorted { $0.sortOrder < $1.sortOrder }
+        var id: String { period.id }
+    }
+
+    private enum PendingDelete: Identifiable {
+        case medication(id: String, name: String)
+        case checkRecord(String)
+        case appointment(id: String, title: String)
+
+        var id: String {
+            switch self {
+            case .medication(let id, _):
+                return "med-\(id)"
+            case .checkRecord(let id):
+                return "check-\(id)"
+            case let .appointment(id, _):
+                return "appt-\(id)"
+            }
         }
 
-        var frequencyText: String {
-            periods.count <= 1 ? "每天1次" : "每天\(periods.count)次"
+        var message: String {
+            switch self {
+            case .medication(_, let name):
+                return "将删除用药“\(name)”，此操作不可撤销。"
+            case .checkRecord:
+                return "将删除这条检查记录，此操作不可撤销。"
+            case .appointment(_, let title):
+                return "将删除预约“\(title)”，此操作不可撤销。"
+            }
         }
     }
 
@@ -30,52 +55,61 @@ struct CheckListView: View {
     @State private var showAddCheck = false
     @State private var showAddAppointment = false
     @State private var editingAppointment: AppointmentItem?
+    @State private var pendingDelete: PendingDelete?
+    @State private var collapsedPastPeriods: Set<TimePeriod> = []
+    @State private var expandedPastPeriods: Set<TimePeriod> = []
 
     var body: some View {
         NavigationStack {
             ZStack {
                 AppTheme.background.ignoresSafeArea()
 
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 12) {
-                        header
-                            .padding(.horizontal)
-
-                        Picker("记录分段", selection: $selectedSegment) {
-                            ForEach(RecordSegment.allCases) { segment in
-                                Text(segment.rawValue).tag(segment)
-                            }
-                        }
-                        .pickerStyle(.segmented)
+                VStack(alignment: .leading, spacing: 12) {
+                    header
                         .padding(.horizontal)
 
-                        if selectedSegment == .medication {
-                            medicationSection
-                        } else if selectedSegment == .check {
-                            checkSection
-                        } else {
-                            appointmentSection
+                    Picker("记录分段", selection: $selectedSegment) {
+                        ForEach(RecordSegment.allCases) { segment in
+                            Text(segment.rawValue).tag(segment)
                         }
                     }
-                    .padding(.top, 12)
-                    .padding(.bottom, AppLayout.scrollTailPadding)
+                    .pickerStyle(.segmented)
+                    .padding(.horizontal)
+
+                    TabView(selection: $selectedSegment) {
+                        segmentPage { medicationSection }
+                            .tag(RecordSegment.medication)
+                        segmentPage { checkSection }
+                            .tag(RecordSegment.check)
+                        segmentPage { appointmentSection }
+                            .tag(RecordSegment.appointment)
+                    }
+                    .tabViewStyle(.page(indexDisplayMode: .never))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
+                .padding(.top, 12)
             }
             .navigationBarTitleDisplayMode(.inline)
             .safeAreaInset(edge: .bottom) {
-                Button(bottomButtonTitle) {
-                    handleBottomAction()
+                VStack(spacing: 0) {
+                    Button(bottomButtonTitle) {
+                        handleBottomAction()
+                    }
+                    .font(.subheadline.weight(.semibold))
+                    .frame(maxWidth: .infinity)
+                    .frame(minHeight: 44)
+                    .background(AppTheme.actionPrimary)
+                    .foregroundStyle(.white)
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                    .padding(.horizontal)
+                    .padding(.top, 8)
+                    .padding(.bottom, 8)
+
+                    Color.clear
+                        .frame(height: AppLayout.dockBottomInsetAboveTabBar)
+                        .allowsHitTesting(false)
                 }
-                .font(.subheadline.weight(.semibold))
-                .frame(maxWidth: .infinity)
-                .frame(minHeight: 44)
-                .background(AppTheme.actionPrimary)
-                .foregroundStyle(.white)
-                .clipShape(RoundedRectangle(cornerRadius: 12))
-                .padding(.horizontal)
-                .padding(.top, 8)
-                .padding(.bottom, AppLayout.dockBottomInsetAboveTabBar)
-                .background(AppTheme.background)
+                .background(AppTheme.background.allowsHitTesting(false))
             }
             .sheet(isPresented: $showAddMedication) {
                 RecordAddView(initialTab: .medication)
@@ -95,7 +129,31 @@ struct CheckListView: View {
                     store.saveAppointment(edited)
                 }
             }
+            .alert("确认删除", isPresented: Binding(
+                get: { pendingDelete != nil },
+                set: { shown in
+                    if !shown { pendingDelete = nil }
+                }
+            )) {
+                Button("取消", role: .cancel) {
+                    pendingDelete = nil
+                }
+                Button("删除", role: .destructive) {
+                    confirmDelete()
+                }
+            } message: {
+                Text(pendingDelete?.message ?? "")
+            }
         }
+    }
+
+    private func segmentPage<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        ScrollView {
+            content()
+                .padding(.bottom, AppLayout.scrollTailPadding)
+                .frame(maxWidth: .infinity)
+        }
+        .scrollIndicators(.hidden)
     }
 
     private var header: some View {
@@ -114,7 +172,7 @@ struct CheckListView: View {
             StatusProgressCard(title: "今日用药完成", done: medicationDoneCount, total: medicationTotalCount)
                 .padding(.horizontal)
 
-            if medicationGroups.isEmpty {
+            if medicationPeriodSections.isEmpty {
                 AppCard {
                     Text("暂无用药记录")
                         .font(.footnote)
@@ -122,71 +180,113 @@ struct CheckListView: View {
                 }
                 .padding(.horizontal)
             } else {
-                ForEach(medicationGroups) { group in
-                    medicationRow(group)
+                ForEach(medicationPeriodSections) { section in
+                    medicationPeriodCard(section)
                         .padding(.horizontal)
                 }
             }
         }
     }
 
-    private func medicationRow(_ group: MedicationGroup) -> some View {
-        let done = groupDone(group)
-
+    private func medicationPeriodCard(_ section: MedicationPeriodSection) -> some View {
+        let collapsed = isPeriodCollapsed(section)
         return AppCard {
             VStack(alignment: .leading, spacing: 10) {
-                HStack {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(group.name)
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(AppTheme.textPrimary)
-                        HStack(spacing: 6) {
-                            Text(group.frequencyText)
-                                .font(.caption2.weight(.semibold))
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 2)
-                                .background(done ? Color(hex: "EDF7F1") : AppTheme.surfaceMuted)
-                                .foregroundStyle(done ? Color(hex: "6BAB8A") : AppTheme.textSecondary)
-                                .clipShape(Capsule())
-                            Text(periodText(group))
-                                .font(.caption)
-                                .foregroundStyle(AppTheme.textSecondary)
-                                .lineLimit(1)
+                Button {
+                    togglePeriodCollapsed(section.period)
+                } label: {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack(spacing: 8) {
+                                Text(section.period.rawValue)
+                                    .font(.subheadline.weight(.semibold))
+                                    .foregroundStyle(AppTheme.textPrimary)
+                                Text("约 \(section.displayTime)")
+                                    .font(.caption)
+                                    .foregroundStyle(AppTheme.textSecondary)
+                            }
+                            HStack(spacing: 6) {
+                                Text("已完成 \(section.doneCount)/\(section.items.count)")
+                                    .font(.caption2.weight(.semibold))
+                                    .foregroundStyle(AppTheme.textSecondary)
+                                if section.pendingCount > 0 {
+                                    Text("未服 \(section.pendingCount) 项")
+                                        .font(.caption2.weight(.semibold))
+                                        .foregroundStyle(section.isPast ? AppTheme.statusError : AppTheme.textSecondary)
+                                }
+                            }
                         }
+                        Spacer()
+                        Image(systemName: collapsed ? "chevron.down" : "chevron.up")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(AppTheme.textHint)
                     }
-                    Spacer()
-                    Text(nextTimeText(for: group))
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(AppTheme.textSecondary)
                 }
+                .buttonStyle(.plain)
+                .appTapTarget(minHeight: 44)
 
-                HStack(spacing: 10) {
-                    Button(done ? "已完成" : "标记完成") {
-                        toggleGroupDone(group)
+                if !collapsed {
+                    ForEach(section.items) { item in
+                        medicationItemRow(item)
                     }
-                    .font(.caption.weight(.semibold))
-                    .padding(.horizontal, 10)
-                    .frame(minHeight: 44)
-                    .background(done ? Color(hex: "EDF7F1") : AppTheme.actionPrimary)
-                    .foregroundStyle(done ? Color(hex: "6BAB8A") : .white)
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
-                    .accessibilityValue(done ? "已完成" : "未完成")
-
-                    Button("归档") {
-                        store.archiveMedicationGroup(named: group.name)
-                    }
-                    .font(.caption.weight(.semibold))
-                    .padding(.horizontal, 10)
-                    .frame(minHeight: 44)
-                    .background(AppTheme.surfaceMuted)
-                    .foregroundStyle(AppTheme.textSecondary)
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
-
-                    Spacer()
                 }
             }
         }
-        .opacity(done ? 0.7 : 1)
+        .opacity(section.pendingCount == 0 ? 0.88 : 1)
+    }
+
+    private func medicationItemRow(_ item: MedicationItem) -> some View {
+        let isDone = isMedicationDone(item)
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .top, spacing: 8) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(item.name)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(AppTheme.textPrimary)
+                    if !item.dosage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !item.note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        Text([item.dosage, item.note].filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }.joined(separator: " · "))
+                            .font(.caption)
+                            .foregroundStyle(AppTheme.textSecondary)
+                    }
+                }
+                Spacer()
+                Text(isDone ? "已完成" : "未完成")
+                    .font(.caption2.weight(.semibold))
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(isDone ? AppTheme.statusSuccessSoft : AppTheme.statusErrorSoft)
+                    .foregroundStyle(isDone ? AppTheme.statusSuccess : AppTheme.statusError)
+                    .clipShape(Capsule())
+            }
+
+            HStack(spacing: 10) {
+                Button(isDone ? "改为未完成" : "标记完成") {
+                    toggleMedicationDone(item)
+                }
+                .font(.caption.weight(.semibold))
+                .padding(.horizontal, 10)
+                .frame(minHeight: 44)
+                .background(isDone ? AppTheme.surfaceMuted : AppTheme.actionPrimary)
+                .foregroundStyle(isDone ? AppTheme.textSecondary : .white)
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+                .accessibilityValue(isDone ? "已完成" : "未完成")
+
+                Button("删除") {
+                    pendingDelete = .medication(id: item.id, name: item.name)
+                }
+                .font(.caption.weight(.semibold))
+                .padding(.horizontal, 10)
+                .frame(minHeight: 44)
+                .background(AppTheme.statusErrorSoft)
+                .foregroundStyle(AppTheme.statusError)
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+
+                Spacer()
+            }
+        }
+        .padding(10)
+        .background(AppTheme.surfaceMuted)
+        .clipShape(RoundedRectangle(cornerRadius: 10))
     }
 
     private var checkSection: some View {
@@ -234,14 +334,14 @@ struct CheckListView: View {
 
                         HStack {
                             Spacer()
-                            Button("归档") {
-                                store.archiveCheckRecord(id: record.id)
+                            Button("删除") {
+                                pendingDelete = .checkRecord(record.id)
                             }
                             .font(.caption.weight(.semibold))
                             .padding(.horizontal, 10)
                             .frame(minHeight: 44)
-                            .background(AppTheme.surfaceMuted)
-                            .foregroundStyle(AppTheme.textSecondary)
+                            .background(AppTheme.statusErrorSoft)
+                            .foregroundStyle(AppTheme.statusError)
                             .clipShape(RoundedRectangle(cornerRadius: 8))
                         }
                     }
@@ -300,14 +400,14 @@ struct CheckListView: View {
                                 .foregroundStyle(AppTheme.statusInfo)
                                 .clipShape(RoundedRectangle(cornerRadius: 8))
 
-                                Button("归档") {
-                                    store.archiveAppointment(id: appointment.id)
+                                Button("删除") {
+                                    pendingDelete = .appointment(id: appointment.id, title: appointment.title)
                                 }
                                 .font(.caption.weight(.semibold))
                                 .padding(.horizontal, 10)
                                 .frame(minHeight: 44)
-                                .background(AppTheme.surfaceMuted)
-                                .foregroundStyle(AppTheme.textSecondary)
+                                .background(AppTheme.statusErrorSoft)
+                                .foregroundStyle(AppTheme.statusError)
                                 .clipShape(RoundedRectangle(cornerRadius: 8))
 
                                 Spacer()
@@ -320,21 +420,38 @@ struct CheckListView: View {
         }
     }
 
-    private var medicationGroups: [MedicationGroup] {
-        let grouped = Dictionary(grouping: store.activeMedications) { med in
-            med.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        }
+    private var medicationPeriodSections: [MedicationPeriodSection] {
+        let nowMinutes = store.timeToMinutes(store.currentTimeText()) ?? 0
 
-        return grouped
-            .compactMap { key, values in
-                guard let first = values.first else { return nil }
-                return MedicationGroup(id: key, name: first.name, items: values)
-            }
-            .sorted { lhs, rhs in
-                let l = lhs.periods.first?.sortOrder ?? 99
-                let r = rhs.periods.first?.sortOrder ?? 99
-                if l == r { return lhs.name < rhs.name }
-                return l < r
+        return TimePeriod.allCases
+            .sorted { $0.sortOrder < $1.sortOrder }
+            .compactMap { period in
+                let items = store.activeMedications
+                    .filter { $0.period == period }
+                    .sorted { lhs, rhs in
+                        let left = lhs.name.trimmingCharacters(in: .whitespacesAndNewlines)
+                        let right = rhs.name.trimmingCharacters(in: .whitespacesAndNewlines)
+                        if left == right {
+                            return lhs.id < rhs.id
+                        }
+                        return left.localizedCompare(right) == .orderedAscending
+                    }
+                guard !items.isEmpty else { return nil }
+
+                let displayTime = ReminderScheduler.semanticAdjustedTimeText(
+                    for: period,
+                    baseTime: store.reminderTime(for: period)
+                )
+                let periodMinutes = store.timeToMinutes(displayTime) ?? 0
+                let doneCount = items.filter { isMedicationDone($0) }.count
+                return MedicationPeriodSection(
+                    period: period,
+                    displayTime: displayTime,
+                    items: items,
+                    doneCount: doneCount,
+                    pendingCount: max(items.count - doneCount, 0),
+                    isPast: nowMinutes > periodMinutes
+                )
             }
     }
 
@@ -347,11 +464,11 @@ struct CheckListView: View {
     }
 
     private var medicationTotalCount: Int {
-        store.medicationSectionsForToday().flatMap { $0.rows }.count
+        medicationPeriodSections.reduce(0) { $0 + $1.items.count }
     }
 
     private var medicationDoneCount: Int {
-        store.medicationSectionsForToday().flatMap { $0.rows }.filter { $0.isCompleted }.count
+        medicationPeriodSections.reduce(0) { $0 + $1.doneCount }
     }
 
     private var bottomButtonTitle: String {
@@ -373,44 +490,51 @@ struct CheckListView: View {
         }
     }
 
-    private func groupDone(_ group: MedicationGroup) -> Bool {
-        let ids = group.items.map { "med-\($0.id)" }
-        return !ids.isEmpty && ids.allSatisfy { store.state.completedDailyTaskIDs.contains($0) }
+    private func isMedicationDone(_ item: MedicationItem) -> Bool {
+        store.state.completedDailyTaskIDs.contains("med-\(item.id)")
     }
 
-    private func toggleGroupDone(_ group: MedicationGroup) {
-        let ids = group.items.map { "med-\($0.id)" }
-        let shouldComplete = ids.contains { !store.state.completedDailyTaskIDs.contains($0) }
-
-        for item in group.items {
-            let id = "med-\(item.id)"
-            let isDone = store.state.completedDailyTaskIDs.contains(id)
-            if shouldComplete && !isDone {
-                store.toggleDailyTask(id)
-                ReminderScheduler.cancelFollowUp(for: item.period)
-            } else if !shouldComplete && isDone {
-                store.toggleDailyTask(id)
-            }
+    private func toggleMedicationDone(_ item: MedicationItem) {
+        let id = "med-\(item.id)"
+        let doneBefore = store.state.completedDailyTaskIDs.contains(id)
+        store.toggleDailyTask(id)
+        if !doneBefore {
+            ReminderScheduler.cancelFollowUp(for: item.period)
         }
     }
 
-    private func periodText(_ group: MedicationGroup) -> String {
-        group.periods.map(\.rawValue).joined(separator: "、")
+    private func isPeriodCollapsed(_ section: MedicationPeriodSection) -> Bool {
+        if collapsedPastPeriods.contains(section.period) {
+            return true
+        }
+        if section.isPast && !expandedPastPeriods.contains(section.period) {
+            return true
+        }
+        return false
     }
 
-    private func nextTimeText(for group: MedicationGroup) -> String {
-        let now = store.timeToMinutes(store.currentTimeText()) ?? 0
-        let times: [(text: String, minutes: Int)] = group.periods.compactMap { period in
-            let base = store.reminderTime(for: period)
-            let adjusted = ReminderScheduler.semanticAdjustedTimeText(for: period, baseTime: base)
-            guard let minutes = store.timeToMinutes(adjusted) else { return nil }
-            return (adjusted, minutes)
+    private func togglePeriodCollapsed(_ period: TimePeriod) {
+        if collapsedPastPeriods.contains(period) {
+            collapsedPastPeriods.remove(period)
+            expandedPastPeriods.insert(period)
+        } else {
+            collapsedPastPeriods.insert(period)
+            expandedPastPeriods.remove(period)
         }
+    }
 
-        if let upcoming = times.filter({ $0.minutes >= now }).sorted(by: { $0.minutes < $1.minutes }).first {
-            return upcoming.text
+    private func confirmDelete() {
+        guard let target = pendingDelete else { return }
+        defer { pendingDelete = nil }
+
+        switch target {
+        case .medication(let id, _):
+            store.deleteMedication(id: id)
+        case .checkRecord(let id):
+            store.deleteCheckRecord(id: id)
+        case .appointment(let id, _):
+            store.deleteAppointment(id: id)
         }
-        return times.sorted(by: { $0.minutes < $1.minutes }).first?.text ?? "--:--"
     }
 }
 
@@ -453,7 +577,7 @@ struct AppointmentEditorSheet: View {
                     if !errorText.isEmpty {
                         Text(errorText)
                             .font(.footnote)
-                            .foregroundStyle(Color(hex: "D4727A"))
+                            .foregroundStyle(AppTheme.statusError)
                     }
 
                     Spacer()
@@ -536,13 +660,20 @@ struct CheckRecordCard: View {
                         let current = metricValue(key)
                         let prev = previousMetricValue(key, previous)
                         let symbol = store.trendSymbol(current: current, previous: prev)
-                        Text(metricLabel(key) + " " + symbol)
-                            .font(.caption2.weight(.semibold))
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 3)
-                            .background(AppTheme.surfaceMuted)
-                            .foregroundStyle(AppTheme.textSecondary)
-                            .clipShape(Capsule())
+                        let delta = deltaText(key, previous: previous)
+                        HStack(spacing: 3) {
+                            Text(metricLabel(key))
+                            Text(symbol)
+                            if let delta {
+                                Text(delta)
+                            }
+                        }
+                        .font(.caption2.weight(.semibold))
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(AppTheme.surfaceMuted)
+                        .foregroundStyle(AppTheme.textSecondary)
+                        .clipShape(Capsule())
                     }
                     Spacer()
                     if let doubling = hcgDoubling(previous: previous) {
@@ -590,12 +721,26 @@ struct CheckRecordCard: View {
         return store.hcgDoublingDays(current: currentHcg, previous: prevHcg, hoursBetween: hours)
     }
 
+    private func deltaText(_ key: String, previous: CheckRecord) -> String? {
+        guard
+            let currentText = record.metrics.first(where: { $0.key == key })?.valueText,
+            let previousText = previous.metrics.first(where: { $0.key == key })?.valueText,
+            let current = Double(currentText),
+            let previousValue = Double(previousText)
+        else {
+            return nil
+        }
+        let diff = current - previousValue
+        let sign = diff >= 0 ? "+" : ""
+        return "\(sign)\(String(format: "%.2f", diff))"
+    }
+
     private var typeColor: Color {
         switch record.type {
         case .pregnancyPanel: return AppTheme.actionPrimary
         case .nt: return AppTheme.statusInfo
         case .tang: return Color(hex: "A48BBF")
-        case .ultrasound: return Color(hex: "6BAB8A")
+        case .ultrasound: return AppTheme.statusSuccess
         case .cbc: return Color(hex: "D4A94E")
         case .custom: return AppTheme.textSecondary
         }
@@ -606,7 +751,7 @@ struct CheckRecordCard: View {
         case .pregnancyPanel: return AppTheme.accentSoft
         case .nt: return AppTheme.statusInfoSoft
         case .tang: return Color(hex: "F3EFF8")
-        case .ultrasound: return Color(hex: "EDF7F1")
+        case .ultrasound: return AppTheme.statusSuccessSoft
         case .cbc: return Color(hex: "FFF8E8")
         case .custom: return AppTheme.surfaceMuted
         }

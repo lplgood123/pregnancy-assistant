@@ -47,7 +47,7 @@ struct AIRequestError: LocalizedError {
         case .timedOut:
             return AIRequestError(
                 kind: .timeout,
-                userMessage: "AI 服务响应超时，请稍后重试。",
+                userMessage: "AI 服务正在启动中，请稍等片刻后重试。",
                 rawMessage: urlError.localizedDescription,
                 httpStatus: nil
             )
@@ -303,7 +303,7 @@ struct AIBackendChatService {
         do {
             return try await withOverallTimeout(
                 seconds: endToEndBudget,
-                userMessage: "AI 服务响应超时，请稍后重试。"
+                userMessage: "AI 服务正在启动中，请稍等片刻后重试。"
             ) {
                 do {
                     return try await requestTextWithPolicy(

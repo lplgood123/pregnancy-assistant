@@ -2,12 +2,12 @@ import SwiftUI
 import UIKit
 
 enum AppTheme {
-    // Glassmorphism 背景 - 女性向渐变（粉紫色调）
+    // Glassmorphism 背景 - 亮灰渐变（保留轻微暖感）
     static let background = LinearGradient(
         colors: [
-            Color(hex: "FFF5F7"),  // 淡粉白
-            Color(hex: "F8E8F5"),  // 淡紫粉
-            Color(hex: "EFE9F7")   // 淡薰衣草
+            Color(hex: "F7F8FA"),
+            Color(hex: "F1F3F6"),
+            Color(hex: "E9EDF2")
         ],
         startPoint: .topLeading,
         endPoint: .bottomTrailing
@@ -21,16 +21,16 @@ enum AppTheme {
     static let accentSoft = Color(hex: "FFE8ED")
 
     // Glassmorphism 卡片 - 半透明毛玻璃效果
-    static let card = Color.white.opacity(0.7)
-    static let cardAlt = Color(hex: "FFF5F7").opacity(0.6)
-    static let surfaceMuted = Color(hex: "F5F0F5").opacity(0.5)
-    static let border = Color.white.opacity(0.3)
-    static let borderLight = Color.white.opacity(0.2)
+    static let card = Color.white.opacity(0.74)
+    static let cardAlt = Color(hex: "F4F6F9").opacity(0.68)
+    static let surfaceMuted = Color(hex: "ECEFF4").opacity(0.58)
+    static let border = Color.white.opacity(0.4)
+    static let borderLight = Color.white.opacity(0.25)
 
     // 文字颜色
-    static let textPrimary = Color(hex: "4A3B47")
-    static let textSecondary = Color(hex: "8B7A88")
-    static let textHint = Color(hex: "B5A8B3")
+    static let textPrimary = Color(hex: "2F3742")
+    static let textSecondary = Color(hex: "667085")
+    static let textHint = Color(hex: "98A2B3")
 
     // Banner 颜色
     static let bannerSuccess = Color(hex: "7CB89D")
@@ -59,7 +59,7 @@ enum AppTheme {
 }
 
 enum AppLayout {
-    static let mainTabBarHeight: CGFloat = 50  // iOS 标准 TabBar 高度
+    static let mainTabBarHeight: CGFloat = 44
     static let bottomDockGap: CGFloat = 8
     static let bottomActionHeight: CGFloat = 48
     static let scrollTailPadding: CGFloat = 16
@@ -83,15 +83,21 @@ enum AppLayout {
         mainTabBarHeight + tabBarBottomSafePadding
     }
 
+    // Visible spacing above custom tab bar for in-page docks.
+    // Do not include safe inset here, because root safeAreaInset already consumes it.
+    static var tabBarVisibleHeight: CGFloat {
+        mainTabBarHeight + bottomDockGap
+    }
+
     // Dock controls rendered inside nested tab pages need explicit offset.
     // TabView-level safeAreaInset does not reliably push nested page safeAreaInset content.
     static var dockBottomInsetAboveTabBar: CGFloat {
-        tabBarOccupiedHeight + bottomDockGap
+        tabBarVisibleHeight
     }
 
     // Extra trailing space for scroll/list content in tab pages.
     static var tabPageScrollTailPadding: CGFloat {
-        tabBarOccupiedHeight + 16
+        tabBarVisibleHeight + 12
     }
 }
 

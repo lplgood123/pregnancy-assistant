@@ -14,6 +14,11 @@ struct ChatHomeView: View {
         case canceling
     }
 
+    private enum ComposerInputMode: Equatable {
+        case text
+        case voice
+    }
+
     private enum ImageSource: Identifiable {
         case camera
         case library
@@ -53,6 +58,7 @@ struct ChatHomeView: View {
     @State private var failedUserInput: String?
     @State private var isRetryingFailedMessage = false
     @State private var didTriggerBackendWarmup = false
+    @State private var composerInputMode: ComposerInputMode = .text
     @State private var voicePressState: VoicePressState = .idle
     @State private var voiceDragOffset: CGSize = .zero
     @State private var liveVoiceTranscript = ""
@@ -72,10 +78,6 @@ struct ChatHomeView: View {
         "create_reminder",
         "update_reminder_time"
     ]
-
-    private var composerBottomInset: CGFloat {
-        tabBarVisible ? AppLayout.tabBarOccupiedHeight : 0
-    }
 
     private var isRecordingVoice: Bool {
         voicePressState != .idle
@@ -129,12 +131,29 @@ struct ChatHomeView: View {
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 VStack(spacing: 0) {
                     composerDock
-                    Color.clear
-                        .frame(height: composerBottomInset)
+                    if tabBarVisible {
+                        Color.clear
+                            .frame(height: AppLayout.tabBarVisibleHeight)
+                            .allowsHitTesting(false)
+                    }
                 }
             }
             .font(AppTheme.bodyFont)
             .toolbar(.hidden, for: .navigationBar)
+            .toolbar {
+                ToolbarItemGroup(placement: .keyboard) {
+                    if composerInputMode == .text {
+                        Spacer()
+                        Button("发送") {
+                            Task {
+                                await sendMessage()
+                            }
+                        }
+                        .font(.subheadline.weight(.semibold))
+                        .disabled(isTyping || inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    }
+                }
+            }
             .alert("确认记录", isPresented: $showConfirm) {
                 Button("取消", role: .cancel) { }
                 Button("确认") {
@@ -174,6 +193,9 @@ struct ChatHomeView: View {
             }
             .onDisappear {
                 resetVoiceState(stopRecognition: true)
+            }
+            .onChange(of: inputText) { oldValue, newValue in
+                handlePotentialKeyboardSend(previous: oldValue, current: newValue)
             }
         }
     }
@@ -282,84 +304,10 @@ struct ChatHomeView: View {
                 .padding(.bottom, 8)
             }
 
-            // 输入区域 - 飞书风格
-            HStack(alignment: .bottom, spacing: 8) {
-                // 左侧功能按钮组
-                HStack(spacing: 8) {
-                    // 语音按钮
-                    pressToTalkButton
-
-                    // 相机按钮
-                    Button {
-                        showImageSourceDialog = true
-                    } label: {
-                        Image(systemName: "photo")
-                            .font(.system(size: 18, weight: .medium))
-                            .foregroundStyle(AppTheme.textSecondary)
-                            .frame(width: 32, height: 32)
-                    }
-                    .disabled(isTyping)
-                    .accessibilityLabel("上传图片")
-                }
-
-                // 输入框 - 飞书风格（圆角矩形，毛玻璃效果）
-                HStack(spacing: 8) {
-                    TextField("", text: $inputText, axis: .vertical)
-                        .placeholder(when: inputText.isEmpty) {
-                            Text("说点什么...")
-                                .foregroundStyle(AppTheme.textHint)
-                        }
-                        .lineLimit(1...4)
-                        .font(.system(size: 15))
-                        .foregroundStyle(AppTheme.textPrimary)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 8)
-                        .focused($inputFocused)
-
-                    // 发送按钮 - 飞书风格（在输入框内）
-                    if !inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        Button {
-                            Task { await sendMessage() }
-                        } label: {
-                            Image(systemName: "arrow.up.circle.fill")
-                                .font(.system(size: 28))
-                                .foregroundStyle(
-                                    LinearGradient(
-                                        colors: [AppTheme.actionPrimary, AppTheme.accentBrand],
-                                        startPoint: .topLeading,
-                                        endPoint: .bottomTrailing
-                                    )
-                                )
-                        }
-                        .disabled(isTyping)
-                        .transition(.scale.combined(with: .opacity))
-                        .accessibilityLabel("发送消息")
-                    }
-                }
-                .frame(minHeight: 36)
-                .background {
-                    ZStack {
-                        RoundedRectangle(cornerRadius: 18, style: .continuous)
-                            .fill(.white.opacity(0.9))
-                        RoundedRectangle(cornerRadius: 18, style: .continuous)
-                            .fill(.ultraThinMaterial)
-                    }
-                }
-                .overlay(
-                    RoundedRectangle(cornerRadius: 18, style: .continuous)
-                        .strokeBorder(
-                            inputFocused ? AppTheme.actionPrimary.opacity(0.5) : AppTheme.border,
-                            lineWidth: inputFocused ? 1.5 : 1
-                        )
-                )
-                .shadow(
-                    color: inputFocused ? AppTheme.actionPrimary.opacity(0.15) : Color.black.opacity(0.05),
-                    radius: inputFocused ? 8 : 4,
-                    x: 0,
-                    y: 2
-                )
-                .animation(.spring(response: 0.3, dampingFraction: 0.7), value: inputFocused)
-                .animation(.spring(response: 0.3, dampingFraction: 0.7), value: inputText.isEmpty)
+            HStack(alignment: .center, spacing: 8) {
+                composerModeToggleButton
+                composerMainSlot
+                imageUploadButton
             }
             .padding(.horizontal, 12)
             .padding(.bottom, 12)
@@ -404,13 +352,97 @@ struct ChatHomeView: View {
             ZStack {
                 Color.white.opacity(0.7)
                     .background(.ultraThinMaterial)
-                    .ignoresSafeArea(edges: .bottom)
             }
             .shadow(color: Color.black.opacity(0.08), radius: 16, x: 0, y: -4)
         }
+        .overlay(alignment: .top) {
+            Rectangle()
+                .fill(AppTheme.borderLight)
+                .frame(height: 1)
+        }
     }
 
-    private var pressToTalkButton: some View {
+    private var composerModeToggleButton: some View {
+        Button {
+            toggleComposerInputMode()
+        } label: {
+            Image(systemName: composerInputMode == .voice ? "keyboard" : "mic.fill")
+                .font(.system(size: 18, weight: .medium))
+                .foregroundStyle(composerInputMode == .voice ? AppTheme.actionPrimary : AppTheme.textSecondary)
+                .frame(width: 32, height: 32)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(composerInputMode == .voice ? "切换到文字输入" : "切换到语音输入")
+    }
+
+    private var imageUploadButton: some View {
+        Button {
+            showImageSourceDialog = true
+        } label: {
+            Image(systemName: "photo")
+                .font(.system(size: 18, weight: .medium))
+                .foregroundStyle(AppTheme.textSecondary)
+                .frame(width: 32, height: 32)
+        }
+        .disabled(isTyping)
+        .buttonStyle(.plain)
+        .accessibilityLabel("上传图片")
+    }
+
+    private var composerMainSlot: some View {
+        Group {
+            if composerInputMode == .text {
+                textInputSlot
+            } else {
+                voiceInputSlot
+            }
+        }
+        .frame(maxWidth: .infinity, minHeight: 36)
+        .background {
+            ZStack {
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .fill(.white.opacity(0.9))
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .fill(.ultraThinMaterial)
+            }
+        }
+        .overlay(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .strokeBorder(composerBorderColor, lineWidth: composerBorderWidth)
+        )
+        .shadow(
+            color: composerShadowColor,
+            radius: composerInputMode == .text && inputFocused ? 8 : 4,
+            x: 0,
+            y: 2
+        )
+        .animation(.spring(response: 0.3, dampingFraction: 0.7), value: inputFocused)
+        .animation(.spring(response: 0.3, dampingFraction: 0.7), value: composerInputMode)
+        .animation(.spring(response: 0.2, dampingFraction: 0.8), value: voicePressState)
+    }
+
+    private var textInputSlot: some View {
+        TextField("", text: $inputText, axis: .vertical)
+            .placeholder(when: inputText.isEmpty) {
+                Text("说点什么...")
+                    .foregroundStyle(AppTheme.textHint)
+            }
+            .lineLimit(1...4)
+            .font(.system(size: 15))
+            .foregroundStyle(AppTheme.textPrimary)
+            .tint(AppTheme.actionPrimary)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .focused($inputFocused)
+            .submitLabel(.send)
+            .onSubmit {
+                Task {
+                    await sendMessage()
+                }
+            }
+    }
+
+    private var voiceInputSlot: some View {
         let dragGesture = DragGesture(minimumDistance: 0)
             .onChanged { value in
                 if voicePressState == .idle {
@@ -422,12 +454,18 @@ struct ChatHomeView: View {
                 endPressToTalk()
             }
 
-        return Button {} label: {
+        return HStack(spacing: 8) {
             Image(systemName: voiceButtonSymbol)
-                .font(.system(size: 18, weight: .medium))
+                .font(.system(size: 15, weight: .semibold))
                 .foregroundStyle(voiceButtonForegroundColor)
-                .frame(width: 32, height: 32)
+            Text(voicePressState == .canceling ? "松开取消" : "按住说话")
+                .font(.system(size: 15, weight: .medium))
+                .foregroundStyle(voicePressState == .canceling ? AppTheme.statusError : AppTheme.textSecondary)
+            Spacer(minLength: 0)
         }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .contentShape(Rectangle())
         .opacity(isTyping ? 0.5 : 1)
         .allowsHitTesting(!isTyping)
         .gesture(dragGesture)
@@ -435,6 +473,41 @@ struct ChatHomeView: View {
         .accessibilityLabel("按住说话")
         .accessibilityHint("按住录音，松开发送；上滑取消")
         .accessibilityValue(voicePressState == .canceling ? "将取消" : (isRecordingVoice ? "录音中" : "待机"))
+    }
+
+    private var composerBorderColor: Color {
+        if composerInputMode == .text {
+            return inputFocused ? AppTheme.actionPrimary.opacity(0.5) : AppTheme.border
+        }
+        switch voicePressState {
+        case .idle:
+            return AppTheme.border
+        case .recording:
+            return AppTheme.actionPrimary.opacity(0.55)
+        case .canceling:
+            return AppTheme.statusError.opacity(0.6)
+        }
+    }
+
+    private var composerBorderWidth: CGFloat {
+        if composerInputMode == .text {
+            return inputFocused ? 1.5 : 1
+        }
+        return voicePressState == .idle ? 1 : 1.5
+    }
+
+    private var composerShadowColor: Color {
+        if composerInputMode == .text {
+            return inputFocused ? AppTheme.actionPrimary.opacity(0.15) : Color.black.opacity(0.05)
+        }
+        switch voicePressState {
+        case .idle:
+            return Color.black.opacity(0.05)
+        case .recording:
+            return AppTheme.actionPrimary.opacity(0.12)
+        case .canceling:
+            return AppTheme.statusError.opacity(0.12)
+        }
     }
 
     private var voiceButtonForegroundColor: Color {
@@ -459,14 +532,18 @@ struct ChatHomeView: View {
         }
     }
 
-    private var voiceButtonBackgroundColor: Color {
-        switch voicePressState {
-        case .idle:
-            return AppTheme.statusInfo
-        case .recording:
-            return AppTheme.actionPrimary
-        case .canceling:
-            return AppTheme.statusError
+    private func toggleComposerInputMode() {
+        if composerInputMode == .voice {
+            if isRecordingVoice {
+                resetVoiceState(stopRecognition: true)
+            }
+            composerInputMode = .text
+            DispatchQueue.main.async {
+                inputFocused = true
+            }
+        } else {
+            composerInputMode = .voice
+            inputFocused = false
         }
     }
 
@@ -475,7 +552,8 @@ struct ChatHomeView: View {
             chatMessages = store.homeChatMessages()
         }
         guard !didInitializeSessionAnchor else { return }
-        sessionAnchorIndex = chatMessages.count
+        // 显示所有历史消息，不再隐藏旧消息
+        sessionAnchorIndex = 0
         openingLine = immediateOpeningLine()
         didInitializeSessionAnchor = true
     }
@@ -532,6 +610,24 @@ struct ChatHomeView: View {
         didTriggerBackendWarmup = true
         Task {
             await chatService.warmup(config: config)
+        }
+    }
+
+    private func handlePotentialKeyboardSend(previous: String, current: String) {
+        guard composerInputMode == .text else { return }
+        guard !isTyping else { return }
+        guard current.count >= previous.count else { return }
+        guard current.hasSuffix("\n") else { return }
+
+        let candidate = current.trimmingCharacters(in: .whitespacesAndNewlines)
+        if candidate.isEmpty {
+            inputText = ""
+            return
+        }
+
+        inputText = candidate
+        Task {
+            await sendMessage()
         }
     }
 
