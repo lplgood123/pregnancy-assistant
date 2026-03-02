@@ -292,6 +292,12 @@ struct ChatHomeView: View {
             .padding(.top, tabBarVisible ? 0 : 10)
             .padding(.bottom, 8)
 
+            // TabBar 占位 — 键盘弹出时 TabBar 隐藏，不需要占位
+            if tabBarVisible {
+                Color.clear
+                    .frame(height: AppLayout.tabBarOccupiedHeight)
+            }
+
             // 状态提示
             if isRecordingVoice {
                 Text(voicePressState == .canceling ? "松开取消" : "松开发送")
