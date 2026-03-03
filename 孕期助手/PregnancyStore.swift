@@ -1111,21 +1111,17 @@ final class PregnancyStore: ObservableObject {
     func applyAIAction(_ action: AIPendingAction) -> String {
         switch action.intent {
         case "create_medication":
-            let name = action.slots["item_name"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            if name.isEmpty { return "缺少用药名称" }
-            let dosage = action.slots["dosage"] ?? ""
-            let note = action.slots["note"] ?? ""
-            let period = TimePeriod.fromSemantic(action.slots["time_semantic"] ?? "")
-            let med = MedicationItem(
-                id: UUID().uuidString,
-                period: period ?? .afterDinner,
-                name: name,
-                dosage: dosage,
-                note: note
-            )
-            addMedication(med)
-            let summary = "已创建用药：\(name)\(dosage.isEmpty ? "" : " · \(dosage)")\(note.isEmpty ? "" : " · \(note)")"
-            return summary
+            let meds = medicationItemsFromAISlots(action.slots)
+            if meds.isEmpty { return "缺少用药名称" }
+            meds.forEach(addMedication)
+
+            if meds.count == 1, let med = meds.first {
+                return "已创建用药：\(med.name)\(med.dosage.isEmpty ? "" : " · \(med.dosage)")\(med.note.isEmpty ? "" : " · \(med.note)")"
+            }
+
+            let previewNames = meds.prefix(5).map(\.name).joined(separator: "、")
+            let suffix = meds.count > 5 ? " 等" : ""
+            return "已创建用药 \(meds.count) 项：\(previewNames)\(suffix)"
         case "create_check_record":
             let rawCheckType = action.slots["check_type"] ?? ""
             let typeInput = rawCheckType.isEmpty ? "妊娠三项" : rawCheckType
@@ -1245,6 +1241,135 @@ final class PregnancyStore: ObservableObject {
         default:
             return "暂不支持该操作"
         }
+    }
+
+    private struct AIMedicationPayload {
+        let name: String
+        let dosage: String
+        let note: String
+        let timeSemantic: String
+    }
+
+    private func medicationItemsFromAISlots(_ slots: [String: String]) -> [MedicationItem] {
+        let defaultSemantic = slots["time_semantic"] ?? ""
+        let defaultPeriod = TimePeriod.fromSemantic(defaultSemantic) ?? .afterDinner
+
+        var payloads = parseBatchMedicationPayloads(from: slots, defaultSemantic: defaultSemantic)
+        if payloads.isEmpty {
+            let singleName = slots["item_name"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if singleName.isEmpty { return [] }
+            payloads = [
+                AIMedicationPayload(
+                    name: singleName,
+                    dosage: slots["dosage"] ?? "",
+                    note: slots["note"] ?? "",
+                    timeSemantic: defaultSemantic
+                )
+            ]
+        }
+
+        return payloads.compactMap { payload in
+            let trimmedName = payload.name.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmedName.isEmpty { return nil }
+            return MedicationItem(
+                id: UUID().uuidString,
+                period: TimePeriod.fromSemantic(payload.timeSemantic) ?? defaultPeriod,
+                name: trimmedName,
+                dosage: payload.dosage.trimmingCharacters(in: .whitespacesAndNewlines),
+                note: payload.note.trimmingCharacters(in: .whitespacesAndNewlines)
+            )
+        }
+    }
+
+    private func parseBatchMedicationPayloads(from slots: [String: String], defaultSemantic: String) -> [AIMedicationPayload] {
+        let fallbackNote = slots["note"] ?? ""
+        let slotKeys = ["medications", "medication_items", "items"]
+
+        for key in slotKeys {
+            guard let raw = slots[key]?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else {
+                continue
+            }
+            guard let data = raw.data(using: .utf8),
+                  let json = try? JSONSerialization.jsonObject(with: data) else {
+                continue
+            }
+
+            let arrayValue: [[String: Any]]
+            if let list = json as? [[String: Any]] {
+                arrayValue = list
+            } else if let dict = json as? [String: Any],
+                      let nested = dict["medications"] as? [[String: Any]] {
+                arrayValue = nested
+            } else {
+                continue
+            }
+
+            let parsed = arrayValue.compactMap { item in
+                parseMedicationPayload(from: item, defaultSemantic: defaultSemantic, fallbackNote: fallbackNote)
+            }
+            if !parsed.isEmpty {
+                return parsed
+            }
+        }
+
+        return []
+    }
+
+    private func parseMedicationPayload(
+        from item: [String: Any],
+        defaultSemantic: String,
+        fallbackNote: String
+    ) -> AIMedicationPayload? {
+        guard let name = firstNonEmptyText(
+            item["item_name"],
+            item["name"],
+            item["title"]
+        ) else {
+            return nil
+        }
+
+        let dosage = firstNonEmptyText(
+            item["dosage"],
+            item["dose"],
+            item["amount"],
+            item["quantity"]
+        ) ?? ""
+        let note = firstNonEmptyText(
+            item["note"],
+            item["remark"],
+            item["memo"]
+        ) ?? fallbackNote
+        let timeSemantic = firstNonEmptyText(
+            item["time_semantic"],
+            item["period"],
+            item["time"],
+            item["time_label"]
+        ) ?? defaultSemantic
+
+        return AIMedicationPayload(
+            name: name,
+            dosage: dosage,
+            note: note,
+            timeSemantic: timeSemantic
+        )
+    }
+
+    private func firstNonEmptyText(_ values: Any?...) -> String? {
+        for value in values {
+            let text: String
+            if let stringValue = value as? String {
+                text = stringValue
+            } else if let numberValue = value as? NSNumber {
+                text = numberValue.stringValue
+            } else {
+                continue
+            }
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty {
+                return trimmed
+            }
+        }
+        return nil
     }
 
     private func formatValue(_ value: Double) -> String {

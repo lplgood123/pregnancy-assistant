@@ -314,7 +314,15 @@ def build_chat_system_prompt(context: str) -> str:
     "hcg": null,
     "progesterone": null,
     "estradiol": null,
-    "note": ""
+    "note": "",
+    "medications": [
+      {{
+        "item_name": "",
+        "dosage": "",
+        "time_semantic": "",
+        "note": ""
+      }}
+    ]
   }},
   "need_clarify": false,
   "clarify_question": "",
@@ -329,7 +337,10 @@ def build_chat_system_prompt(context: str) -> str:
 5) 若用户修改作息或提醒时间（如“晚饭后改到19:30”、“提醒提前10分钟”），intent=update_reminder_time。
 6) 若用户询问医疗判断/治疗建议，assistant_reply 需提示“我是健康助手，不是医生，请咨询医生”。
 7) 不支持的操作（如修改既有用药、确认已服用）统一返回 intent=unknown，并在 assistant_reply 给出可执行替代建议。
-8) 参考用户资料与用药计划：
+8) 如果用户一次输入多条用药（例如按“起床后/早饭后/晚饭后/睡前”列出多个药），intent=create_medication，
+   slots.medications 必须返回完整数组，每个元素填写 item_name/dosage/time_semantic/note；
+   不要只填第一项。单条用药时可仅填 item_name/dosage/time_semantic。
+9) 参考用户资料与用药计划：
 {safe_context}
 """.strip()
 

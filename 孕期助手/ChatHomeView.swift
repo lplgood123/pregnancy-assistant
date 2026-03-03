@@ -50,8 +50,6 @@ struct ChatHomeView: View {
     @State private var errorText = ""
     @State private var isTyping = false
     @State private var typingStageText = "小助手正在思考…"
-    @State private var sessionAnchorIndex = 0
-    @State private var didInitializeSessionAnchor = false
     @State private var openingLine = ""
     @State private var isRefreshingOpeningSummary = false
     @State private var failedMessageID: String?
@@ -172,6 +170,7 @@ struct ChatHomeView: View {
             }
             .onDisappear {
                 resetVoiceState(stopRecognition: true)
+                store.saveHomeChatMessages(chatMessages)
             }
             .onChange(of: inputText) { oldValue, newValue in
                 handlePotentialKeyboardSend(previous: oldValue, current: newValue)
@@ -356,6 +355,7 @@ struct ChatHomeView: View {
                 .frame(width: 32, height: 32)
         }
         .buttonStyle(.plain)
+        .appTapTarget()
         .accessibilityLabel(composerInputMode == .voice ? "切换到文字输入" : "切换到语音输入")
     }
 
@@ -370,6 +370,7 @@ struct ChatHomeView: View {
         }
         .disabled(isTyping)
         .buttonStyle(.plain)
+        .appTapTarget()
         .accessibilityLabel("上传图片")
     }
 
@@ -442,7 +443,7 @@ struct ChatHomeView: View {
             Image(systemName: voiceButtonSymbol)
                 .font(.system(size: 15, weight: .semibold))
                 .foregroundStyle(voiceButtonForegroundColor)
-            Text(voicePressState == .canceling ? "松开取消" : "按住说话")
+            Text(voiceActionText)
                 .font(.system(size: 15, weight: .medium))
                 .foregroundStyle(voicePressState == .canceling ? AppTheme.statusError : AppTheme.textSecondary)
             Spacer(minLength: 0)
@@ -450,13 +451,22 @@ struct ChatHomeView: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .contentShape(Rectangle())
-        .opacity(isTyping ? 0.5 : 1)
-        .allowsHitTesting(!isTyping)
-        .gesture(dragGesture)
+        .highPriorityGesture(dragGesture)
         .accessibilityElement()
         .accessibilityLabel("按住说话")
         .accessibilityHint("按住录音，松开发送；上滑取消")
         .accessibilityValue(voicePressState == .canceling ? "将取消" : (isRecordingVoice ? "录音中" : "待机"))
+    }
+
+    private var voiceActionText: String {
+        switch voicePressState {
+        case .idle:
+            return "按住说话"
+        case .recording:
+            return "松开发送"
+        case .canceling:
+            return "松开取消"
+        }
     }
 
     private var composerBorderColor: Color {
@@ -535,11 +545,7 @@ struct ChatHomeView: View {
         if chatMessages.isEmpty {
             chatMessages = store.homeChatMessages()
         }
-        guard !didInitializeSessionAnchor else { return }
-        // 显示所有历史消息，不再隐藏旧消息
-        sessionAnchorIndex = 0
         openingLine = immediateOpeningLine()
-        didInitializeSessionAnchor = true
     }
 
     private func refreshOpeningLineWithAI(force: Bool) async {
@@ -600,10 +606,13 @@ struct ChatHomeView: View {
     private func handlePotentialKeyboardSend(previous: String, current: String) {
         guard composerInputMode == .text else { return }
         guard !isTyping else { return }
-        guard current.count >= previous.count else { return }
-        guard current.hasSuffix("\n") else { return }
+        let oldBreakCount = previous.filter { $0 == "\n" }.count
+        let newBreakCount = current.filter { $0 == "\n" }.count
+        guard newBreakCount > oldBreakCount else { return }
 
-        let candidate = current.trimmingCharacters(in: .whitespacesAndNewlines)
+        let candidate = current
+            .replacingOccurrences(of: "\n", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
         if candidate.isEmpty {
             inputText = ""
             return
@@ -646,7 +655,12 @@ struct ChatHomeView: View {
     private func handleQuickCommandTap(_ command: QuickCommand) {
         let prompt = command.prompt.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !prompt.isEmpty else { return }
-        if command.title == "今日安排" {
+        let directSendTodayPlan =
+            command.title.contains("今日安排") ||
+            prompt.contains("今天需要注意的安排") ||
+            prompt.contains("今日安排")
+
+        if directSendTodayPlan {
             Task {
                 await submitUserInput(prompt)
             }
@@ -657,7 +671,6 @@ struct ChatHomeView: View {
     }
 
     private func beginPressToTalk() {
-        guard !isTyping else { return }
         guard voicePressState == .idle else { return }
 
         errorText = ""
@@ -902,14 +915,18 @@ struct ChatHomeView: View {
     }
 
     private var visibleMessages: [HomeChatMessage] {
-        let anchor = min(max(sessionAnchorIndex, 0), chatMessages.count)
-        return Array(chatMessages.dropFirst(anchor))
+        chatMessages
     }
 
     private func pendingSummary() -> String {
         guard let pendingAction else { return "确认执行该操作？" }
         switch pendingAction.intent {
         case "create_medication":
+            if let preview = medicationBatchPreview(from: pendingAction.slots), preview.count > 1 {
+                let names = preview.names.joined(separator: "、")
+                let tail = preview.count > preview.names.count ? " 等" : ""
+                return "创建用药 \(preview.count) 项：\(names)\(tail)"
+            }
             let name = pendingAction.slots["item_name"] ?? "用药"
             let time = displayTime(for: pendingAction)
             return "创建用药：\(name)\(time.isEmpty ? "" : " · \(time)")"
@@ -949,6 +966,49 @@ struct ChatHomeView: View {
         let base = store.reminderTime(for: period)
         let adjusted = ReminderScheduler.semanticAdjustedTimeText(for: period, baseTime: base)
         return "\(period.rawValue)（约 \(adjusted)）"
+    }
+
+    private func medicationBatchPreview(from slots: [String: String]) -> (count: Int, names: [String])? {
+        for key in ["medications", "medication_items", "items"] {
+            guard let raw = slots[key]?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else {
+                continue
+            }
+            guard let data = raw.data(using: .utf8),
+                  let json = try? JSONSerialization.jsonObject(with: data),
+                  let list = json as? [[String: Any]] else {
+                continue
+            }
+
+            let names = list.compactMap { item in
+                firstNonEmptyString(
+                    item["item_name"],
+                    item["name"],
+                    item["title"]
+                )
+            }
+            if !names.isEmpty {
+                return (names.count, Array(names.prefix(4)))
+            }
+        }
+        return nil
+    }
+
+    private func firstNonEmptyString(_ values: Any?...) -> String? {
+        for value in values {
+            let text: String
+            if let stringValue = value as? String {
+                text = stringValue
+            } else if let numberValue = value as? NSNumber {
+                text = numberValue.stringValue
+            } else {
+                continue
+            }
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty {
+                return trimmed
+            }
+        }
+        return nil
     }
 
     private func normalizedIntent(from raw: String) -> String {
@@ -1021,11 +1081,7 @@ enum AIParse {
         var slots: [String: String] = [:]
         if let rawSlots = obj["slots"] as? [String: Any] {
             for (key, value) in rawSlots {
-                if value is NSNull {
-                    slots[key] = ""
-                } else {
-                    slots[key] = String(describing: value)
-                }
+                slots[key] = slotValueToString(value)
             }
         }
 
@@ -1049,6 +1105,24 @@ enum AIParse {
             return String(trimmed[start...end])
         }
         return nil
+    }
+
+    private static func slotValueToString(_ value: Any) -> String {
+        if value is NSNull { return "" }
+        if let stringValue = value as? String { return stringValue }
+        if let dictValue = value as? [String: Any],
+           JSONSerialization.isValidJSONObject(dictValue),
+           let data = try? JSONSerialization.data(withJSONObject: dictValue, options: [.sortedKeys]),
+           let jsonString = String(data: data, encoding: .utf8) {
+            return jsonString
+        }
+        if let arrayValue = value as? [Any],
+           JSONSerialization.isValidJSONObject(arrayValue),
+           let data = try? JSONSerialization.data(withJSONObject: arrayValue, options: []),
+           let jsonString = String(data: data, encoding: .utf8) {
+            return jsonString
+        }
+        return String(describing: value)
     }
 }
 
