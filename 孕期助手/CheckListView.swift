@@ -58,6 +58,7 @@ struct CheckListView: View {
     @State private var pendingDelete: PendingDelete?
     @State private var collapsedPastPeriods: Set<TimePeriod> = []
     @State private var expandedPastPeriods: Set<TimePeriod> = []
+    @State private var selectedMedicationDate: Date = Date()
 
     var body: some View {
         NavigationStack {
@@ -169,7 +170,51 @@ struct CheckListView: View {
 
     private var medicationSection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            StatusProgressCard(title: "今日用药完成", done: medicationDoneCount, total: medicationTotalCount)
+            AppCard {
+                HStack {
+                    Text("查看日期")
+                        .font(.footnote)
+                        .foregroundStyle(AppTheme.textSecondary)
+                    Spacer()
+                    DatePicker(
+                        "",
+                        selection: $selectedMedicationDate,
+                        displayedComponents: .date
+                    )
+                    .labelsHidden()
+                }
+            }
+            .padding(.horizontal)
+
+            AppCard {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("当日安排")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(AppTheme.textHint)
+                    if store.isInjectionDue(on: selectedMedicationDate) {
+                        Text("\(store.formatDate(selectedMedicationDate)) 需要打针：\(store.state.injectionPlan.title)")
+                            .font(.footnote.weight(.semibold))
+                            .foregroundStyle(AppTheme.textPrimary)
+                        Text(store.state.injectionPlan.detail)
+                            .font(.caption)
+                            .foregroundStyle(AppTheme.textSecondary)
+                    } else if let next = nextInjectionDate(from: selectedMedicationDate) {
+                        Text("\(store.formatDate(selectedMedicationDate)) 当天没有打针安排")
+                            .font(.footnote)
+                            .foregroundStyle(AppTheme.textSecondary)
+                        Text("下一次：\(store.formatDate(next)) · \(store.state.injectionPlan.title)")
+                            .font(.caption)
+                            .foregroundStyle(AppTheme.textSecondary)
+                    } else {
+                        Text("\(store.formatDate(selectedMedicationDate)) 暂无打针安排")
+                            .font(.footnote)
+                            .foregroundStyle(AppTheme.textSecondary)
+                    }
+                }
+            }
+            .padding(.horizontal)
+
+            StatusProgressCard(title: medicationProgressTitle, done: medicationDoneCount, total: medicationTotalCount)
                 .padding(.horizontal)
 
             if medicationPeriodSections.isEmpty {
@@ -237,6 +282,7 @@ struct CheckListView: View {
 
     private func medicationItemRow(_ item: MedicationItem) -> some View {
         let isDone = isMedicationDone(item)
+        let actionable = isViewingToday
         return VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .top, spacing: 8) {
                 VStack(alignment: .leading, spacing: 3) {
@@ -266,10 +312,11 @@ struct CheckListView: View {
                 .font(.caption.weight(.semibold))
                 .padding(.horizontal, 10)
                 .frame(minHeight: 44)
-                .background(isDone ? AppTheme.surfaceMuted : AppTheme.actionPrimary)
-                .foregroundStyle(isDone ? AppTheme.textSecondary : .white)
+                .background(actionable ? (isDone ? AppTheme.surfaceMuted : AppTheme.actionPrimary) : AppTheme.surfaceMuted)
+                .foregroundStyle(actionable ? (isDone ? AppTheme.textSecondary : .white) : AppTheme.textHint)
                 .clipShape(RoundedRectangle(cornerRadius: 8))
                 .accessibilityValue(isDone ? "已完成" : "未完成")
+                .disabled(!actionable)
 
                 Button("删除") {
                     pendingDelete = .medication(id: item.id, name: item.name)
@@ -282,6 +329,11 @@ struct CheckListView: View {
                 .clipShape(RoundedRectangle(cornerRadius: 8))
 
                 Spacer()
+            }
+            if !actionable {
+                Text("非今天日期，仅查看安排")
+                    .font(.caption2)
+                    .foregroundStyle(AppTheme.textHint)
             }
         }
         .padding(10)
@@ -421,6 +473,10 @@ struct CheckListView: View {
     }
 
     private var medicationPeriodSections: [MedicationPeriodSection] {
+        let selectedDay = Calendar.current.startOfDay(for: selectedMedicationDate)
+        let todayDay = Calendar.current.startOfDay(for: Date())
+        let viewingToday = selectedDay == todayDay
+        let viewingPast = selectedDay < todayDay
         let nowMinutes = store.timeToMinutes(store.currentTimeText()) ?? 0
 
         return TimePeriod.allCases
@@ -443,14 +499,14 @@ struct CheckListView: View {
                     baseTime: store.reminderTime(for: period)
                 )
                 let periodMinutes = store.timeToMinutes(displayTime) ?? 0
-                let doneCount = items.filter { isMedicationDone($0) }.count
+                let doneCount = viewingToday ? items.filter { isMedicationDone($0) }.count : 0
                 return MedicationPeriodSection(
                     period: period,
                     displayTime: displayTime,
                     items: items,
                     doneCount: doneCount,
                     pendingCount: max(items.count - doneCount, 0),
-                    isPast: nowMinutes > periodMinutes
+                    isPast: viewingPast || (viewingToday && nowMinutes > periodMinutes)
                 )
             }
     }
@@ -469,6 +525,15 @@ struct CheckListView: View {
 
     private var medicationDoneCount: Int {
         medicationPeriodSections.reduce(0) { $0 + $1.doneCount }
+    }
+
+    private var medicationProgressTitle: String {
+        if isViewingToday { return "今日用药完成" }
+        return "\(store.formatDate(selectedMedicationDate)) 用药安排"
+    }
+
+    private var isViewingToday: Bool {
+        Calendar.current.isDate(selectedMedicationDate, inSameDayAs: Date())
     }
 
     private var bottomButtonTitle: String {
@@ -535,6 +600,22 @@ struct CheckListView: View {
         case .appointment(let id, _):
             store.deleteAppointment(id: id)
         }
+    }
+
+    private func nextInjectionDate(from date: Date) -> Date? {
+        let calendar = Calendar.current
+        var current = calendar.startOfDay(for: date)
+        let end = calendar.startOfDay(for: store.state.injectionPlan.endDate)
+        while current <= end {
+            if store.isInjectionDue(on: current) {
+                return current
+            }
+            guard let next = calendar.date(byAdding: .day, value: 1, to: current) else {
+                return nil
+            }
+            current = next
+        }
+        return nil
     }
 }
 

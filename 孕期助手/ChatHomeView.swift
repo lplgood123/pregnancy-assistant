@@ -99,6 +99,14 @@ struct ChatHomeView: View {
                         .padding(.top, 12)
                         .padding(.bottom, AppLayout.scrollTailPadding)
                     }
+                    .contentShape(Rectangle())
+                    .simultaneousGesture(
+                        TapGesture().onEnded {
+                            if inputFocused {
+                                inputFocused = false
+                            }
+                        }
+                    )
                     .scrollIndicators(.hidden)
                     .scrollDismissesKeyboard(.interactively)
                     .onAppear {
@@ -116,6 +124,17 @@ struct ChatHomeView: View {
                     }
                     .onChange(of: isTyping) { _, _ in
                         scrollToBottom(proxy)
+                    }
+                    .onChange(of: inputFocused) { _, focused in
+                        guard !focused else { return }
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
+                            scrollToBottom(proxy)
+                        }
+                    }
+                    .onChange(of: tabBarVisible) { _, _ in
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
+                            scrollToBottom(proxy)
+                        }
                     }
                     .onChange(of: store.homeSummaryFingerprint()) { _, _ in
                         openingLine = immediateOpeningLine()
