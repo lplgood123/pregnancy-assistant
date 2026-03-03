@@ -17,15 +17,21 @@ struct ContentView: View {
     @State private var lastSyncedReminderRevision = 0
 
     var body: some View {
-        Group {
-            switch selectedTab {
-            case .home:
-                ChatHomeView(tabBarVisible: !isKeyboardVisible)
-            case .records:
-                CheckListView()
-            case .profile:
-                ProfileView()
-            }
+        ZStack {
+            ChatHomeView(tabBarVisible: selectedTab == .home && !isKeyboardVisible)
+                .opacity(selectedTab == .home ? 1 : 0)
+                .allowsHitTesting(selectedTab == .home)
+                .accessibilityHidden(selectedTab != .home)
+
+            CheckListView()
+                .opacity(selectedTab == .records ? 1 : 0)
+                .allowsHitTesting(selectedTab == .records)
+                .accessibilityHidden(selectedTab != .records)
+
+            ProfileView()
+                .opacity(selectedTab == .profile ? 1 : 0)
+                .allowsHitTesting(selectedTab == .profile)
+                .accessibilityHidden(selectedTab != .profile)
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             if !isKeyboardVisible {

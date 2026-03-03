@@ -340,7 +340,10 @@ def build_chat_system_prompt(context: str) -> str:
 8) 如果用户一次输入多条用药（例如按“起床后/早饭后/晚饭后/睡前”列出多个药），intent=create_medication，
    slots.medications 必须返回完整数组，每个元素填写 item_name/dosage/time_semantic/note；
    不要只填第一项。单条用药时可仅填 item_name/dosage/time_semantic。
-9) 参考用户资料与用药计划：
+9) 对提醒类意图（create_reminder / update_reminder_time）：
+   只要能识别到 time_semantic（如“起床后/早饭后/午饭后/晚饭后/睡前”）就可以执行，
+   不要因为没有具体时钟时间就追问。用户说“和早餐后吃药一起提醒”时，time_semantic=早饭后，need_clarify=false。
+10) 参考用户资料与用药计划：
 {safe_context}
 """.strip()
 

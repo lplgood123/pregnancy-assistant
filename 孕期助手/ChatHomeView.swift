@@ -132,7 +132,12 @@ struct ChatHomeView: View {
             .font(AppTheme.bodyFont)
             .toolbar(.hidden, for: .navigationBar)
             .alert("确认记录", isPresented: $showConfirm) {
-                Button("取消", role: .cancel) { }
+                Button("取消", role: .cancel) {
+                    if let pendingAction {
+                        store.removePendingAction(id: pendingAction.id)
+                        self.pendingAction = nil
+                    }
+                }
                 Button("确认") {
                     if let pendingAction {
                         let result = store.applyAIAction(pendingAction)
@@ -545,7 +550,15 @@ struct ChatHomeView: View {
         if chatMessages.isEmpty {
             chatMessages = store.homeChatMessages()
         }
+        restorePendingActionIfNeeded()
         openingLine = immediateOpeningLine()
+    }
+
+    private func restorePendingActionIfNeeded() {
+        if pendingAction != nil { return }
+        guard let lastPending = store.aiPendingActions().last else { return }
+        pendingAction = lastPending
+        showConfirm = true
     }
 
     private func refreshOpeningLineWithAI(force: Bool) async {

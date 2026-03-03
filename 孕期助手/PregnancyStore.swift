@@ -1222,6 +1222,9 @@ final class PregnancyStore: ObservableObject {
                     }
                     updatedParts.append("\(period.rawValue)时间 \(normalized)")
                     changed = true
+                } else if timeText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    let linked = reminderTime(for: period)
+                    updatedParts.append("\(period.rawValue)提醒（沿用 \(linked)）")
                 }
             }
 
