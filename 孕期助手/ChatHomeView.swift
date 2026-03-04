@@ -47,6 +47,31 @@ struct ChatHomeView: View {
         }
     }
 
+    private enum TodayInfoScope: String, CaseIterable, Identifiable {
+        case medical
+        case all
+
+        var id: String { rawValue }
+
+        var title: String {
+            switch self {
+            case .medical:
+                return "医疗相关"
+            case .all:
+                return "全部"
+            }
+        }
+
+        var storeScope: HomeTimelineScope {
+            switch self {
+            case .medical:
+                return .medical
+            case .all:
+                return .all
+            }
+        }
+    }
+
     let tabBarVisible: Bool
 
     @EnvironmentObject private var store: PregnancyStore
@@ -60,8 +85,9 @@ struct ChatHomeView: View {
     @State private var errorText = ""
     @State private var isTyping = false
     @State private var typingStageText = "小助手正在思考…"
-    @State private var openingLine = ""
-    @State private var isRefreshingOpeningSummary = false
+    @State private var dailyGreetingLine = ""
+    @State private var showTodayInfoSheet = false
+    @State private var todayInfoScope: TodayInfoScope = .medical
     @State private var failedMessageID: String?
     @State private var failedUserInput: String?
     @State private var isRetryingFailedMessage = false
@@ -125,12 +151,9 @@ struct ChatHomeView: View {
                     .scrollDismissesKeyboard(.interactively)
                     .onAppear {
                         store.refreshForTodayIfNeeded()
-                        store.clearExpiredHomeSummaryCacheIfNeeded()
-                        openingLine = immediateOpeningLine()
                         initializeSessionIfNeeded()
-                        markDailyGreetingSeenIfNeeded()
+                        refreshDailyGreetingBanner()
                         triggerBackendWarmupIfNeeded()
-                        Task { await refreshOpeningLineWithAI(force: false) }
                         scrollToBottomStable(proxy)
                     }
                     .onChange(of: chatMessages.count) { _, _ in
@@ -150,18 +173,17 @@ struct ChatHomeView: View {
                         scrollToBottomStable(proxy)
                     }
                     .onChange(of: store.homeSummaryFingerprint()) { _, _ in
-                        openingLine = immediateOpeningLine()
-                        Task { await refreshOpeningLineWithAI(force: false) }
+                        refreshDailyGreetingBanner()
                     }
                     .onChange(of: store.resetEpoch) { _, _ in
                         clearLocalSessionState()
                         initializeSessionIfNeeded()
-                        markDailyGreetingSeenIfNeeded()
+                        refreshDailyGreetingBanner()
                         scrollToBottomStable(proxy)
                     }
                     .onChange(of: scenePhase) { _, newPhase in
                         guard newPhase == .active else { return }
-                        markDailyGreetingSeenIfNeeded()
+                        refreshDailyGreetingBanner()
                         scrollToBottomStable(proxy)
                     }
                 }
@@ -198,10 +220,7 @@ struct ChatHomeView: View {
                         chatMessages.append(HomeChatMessage(role: .assistant, kind: .text, text: result))
                         self.pendingAction = nil
                         store.removePendingAction(id: pendingAction.id)
-                        openingLine = immediateOpeningLine()
-                        Task {
-                            await refreshOpeningLineWithAI(force: false)
-                        }
+                        refreshDailyGreetingBanner()
                     }
                 }
             } message: {
@@ -230,6 +249,11 @@ struct ChatHomeView: View {
             .sheet(isPresented: $showQuickAddPregnancyPanel) {
                 RecordAddView(initialTab: .check, initialCheckType: .pregnancyPanel)
                     .environmentObject(store)
+            }
+            .sheet(isPresented: $showTodayInfoSheet) {
+                todayInfoSheet
+                    .presentationDetents([.medium, .large])
+                    .presentationDragIndicator(.visible)
             }
             .onDisappear {
                 resetVoiceState(stopRecognition: true)
@@ -319,8 +343,10 @@ struct ChatHomeView: View {
     }
 
     private var topFixedInfoBar: some View {
-        let summary = store.homeSummary()
-        let pendingItems = todayPendingItems
+        let medicalItems = store.todayTimelineItems(scope: .medical, includeCompleted: true)
+        let pendingMedicalItems = store.todayTimelineItems(scope: .medical, includeCompleted: false)
+        let previewItems = Array(pendingMedicalItems.prefix(2))
+        let completedCount = medicalItems.count - pendingMedicalItems.count
 
         return VStack(alignment: .leading, spacing: 8) {
             Text("孕期健康伙伴")
@@ -334,48 +360,48 @@ struct ChatHomeView: View {
             }
 
             VStack(alignment: .leading, spacing: 8) {
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text("今日信息")
-                        .font(.footnote.weight(.semibold))
+                if !dailyGreetingLine.isEmpty {
+                    Text(dailyGreetingLine)
+                        .font(.footnote.weight(.medium))
                         .foregroundStyle(AppTheme.textPrimary)
-                    Spacer()
-                    Text("已完成 \(summary.done)/\(summary.total) · 剩余 \(summary.left)")
-                        .font(.caption)
-                        .foregroundStyle(AppTheme.textSecondary)
+                        .multilineTextAlignment(.leading)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
 
-                if pendingItems.isEmpty {
-                    Text("今天已无待办安排。")
+                Text("今日进度：已完成 \(completedCount) / \(medicalItems.count)，剩余 \(pendingMedicalItems.count)")
+                    .font(.caption)
+                    .foregroundStyle(AppTheme.textSecondary)
+
+                if previewItems.isEmpty {
+                    Text("今天医疗安排已完成")
                         .font(.footnote)
                         .foregroundStyle(AppTheme.textSecondary)
-                        .fixedSize(horizontal: false, vertical: true)
                 } else {
-                    ForEach(pendingItems) { item in
-                        HStack(alignment: .top, spacing: 8) {
-                            Text(item.timeText)
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(AppTheme.textSecondary)
-                                .frame(width: 44, alignment: .leading)
-
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(item.title)
-                                    .font(.footnote.weight(.semibold))
-                                    .foregroundStyle(AppTheme.textPrimary)
-                                    .fixedSize(horizontal: false, vertical: true)
-                                if !item.subtitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                                    Text(item.subtitle)
-                                        .font(.caption2)
-                                        .foregroundStyle(AppTheme.textSecondary)
-                                        .fixedSize(horizontal: false, vertical: true)
-                                }
-                            }
-                        }
+                    ForEach(previewItems) { item in
+                        topSummaryTaskRow(item)
                     }
                 }
+
+                Button {
+                    todayInfoScope = .medical
+                    showTodayInfoSheet = true
+                } label: {
+                    HStack(spacing: 6) {
+                        Text("查看全部今日信息（\(medicalItems.count)）")
+                            .font(.footnote.weight(.semibold))
+                        Spacer(minLength: 0)
+                        Image(systemName: "chevron.up")
+                            .font(.caption.weight(.semibold))
+                    }
+                    .foregroundStyle(AppTheme.actionPrimary)
+                    .padding(.top, 2)
+                }
+                .buttonStyle(.plain)
+                .appTapTarget()
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 10)
-            .padding(.vertical, 8)
+            .padding(.vertical, 9)
             .background(
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
                     .fill(AppTheme.card)
@@ -397,6 +423,154 @@ struct ChatHomeView: View {
                 .fill(AppTheme.borderLight)
                 .frame(height: 1)
         }
+    }
+
+    @ViewBuilder
+    private func topSummaryTaskRow(_ item: TimelineItem) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Text(item.timeText)
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(AppTheme.textHint)
+                .frame(width: 40, alignment: .leading)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(item.title)
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(AppTheme.textPrimary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                if !item.subtitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    Text(item.subtitle)
+                        .font(.caption2)
+                        .foregroundStyle(AppTheme.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+    }
+
+    private var todayInfoSheet: some View {
+        let items = todaySheetItems
+        let pendingCount = items.filter { !$0.isCompleted }.count
+        let completedCount = items.count - pendingCount
+
+        return NavigationStack {
+            VStack(alignment: .leading, spacing: 12) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(todaySheetDateText())
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(AppTheme.textPrimary)
+                    Text("总 \(items.count) 项 · 待完成 \(pendingCount) 项 · 已完成 \(completedCount) 项")
+                        .font(.caption)
+                        .foregroundStyle(AppTheme.textSecondary)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+                Picker("今日信息范围", selection: $todayInfoScope) {
+                    ForEach(TodayInfoScope.allCases) { scope in
+                        Text(scope.title).tag(scope)
+                    }
+                }
+                .pickerStyle(.segmented)
+
+                if items.isEmpty {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("今天暂无相关安排")
+                            .font(.headline)
+                            .foregroundStyle(AppTheme.textPrimary)
+                        Text(todayInfoScope == .medical ? "医疗相关事项都处理完了。" : "今天没有需要处理的事项。")
+                            .font(.subheadline)
+                            .foregroundStyle(AppTheme.textSecondary)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.vertical, 20)
+                } else {
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 10) {
+                            ForEach(items) { item in
+                                todayInfoSheetRow(item)
+                            }
+                        }
+                        .padding(.bottom, 12)
+                    }
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 14)
+            .navigationTitle("今日信息")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("关闭") {
+                        showTodayInfoSheet = false
+                    }
+                }
+            }
+        }
+    }
+
+    private var todaySheetItems: [TimelineItem] {
+        store.todayTimelineItems(scope: todayInfoScope.storeScope, includeCompleted: true)
+    }
+
+    @ViewBuilder
+    private func todayInfoSheetRow(_ item: TimelineItem) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(alignment: .top, spacing: 6) {
+                    Text(item.kind.label)
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(item.kind.color)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 3)
+                        .background(
+                            Capsule(style: .continuous)
+                                .fill(item.kind.colorSoft)
+                        )
+                    Text(item.title)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(AppTheme.textPrimary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                if !item.subtitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    Text(item.subtitle)
+                        .font(.footnote)
+                        .foregroundStyle(AppTheme.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+
+            Spacer(minLength: 8)
+
+            VStack(alignment: .trailing, spacing: 4) {
+                Text(item.timeText)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(AppTheme.textHint)
+                Text(item.isCompleted ? "已完成" : "待完成")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(item.isCompleted ? AppTheme.statusSuccess : AppTheme.textSecondary)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(AppTheme.card)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(AppTheme.borderLight, lineWidth: 1)
+        )
+    }
+
+    private func todaySheetDateText() -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.dateFormat = "yyyy年M月d日 EEEE"
+        return formatter.string(from: Date())
     }
 
     private var composerDock: some View {
@@ -675,7 +849,6 @@ struct ChatHomeView: View {
             chatMessages = store.homeChatMessages()
         }
         restorePendingActionIfNeeded()
-        openingLine = immediateOpeningLine()
     }
 
     private func clearLocalSessionState() {
@@ -693,16 +866,13 @@ struct ChatHomeView: View {
         ocrProcessingState = .idle
         showImageSourceDialog = false
         imageSource = nil
+        showTodayInfoSheet = false
+        todayInfoScope = .medical
     }
 
-    private var todayPendingItems: [TimelineItem] {
-        store.timelineItems(for: Date())
-            .filter { !$0.isCompleted }
-            .sorted { (store.timeToMinutes($0.timeText) ?? 0) < (store.timeToMinutes($1.timeText) ?? 0) }
-    }
-
-    private func markDailyGreetingSeenIfNeeded(now: Date = Date()) {
+    private func refreshDailyGreetingBanner(now: Date = Date()) {
         _ = store.takeDailyGreetingIfNeeded(now: now)
+        dailyGreetingLine = store.homeWarmGreetingLine(now: now)
     }
 
     private func restorePendingActionIfNeeded() {
@@ -710,51 +880,6 @@ struct ChatHomeView: View {
         guard let lastPending = store.aiPendingActions().last else { return }
         pendingAction = lastPending
         showConfirm = true
-    }
-
-    private func refreshOpeningLineWithAI(force: Bool) async {
-        if isRefreshingOpeningSummary {
-            return
-        }
-        if !force && !store.shouldRefreshHomeSummary() {
-            return
-        }
-
-        let config = store.currentAIConfig()
-        guard !config.baseURL.isEmpty else { return }
-
-        let requestFingerprint = store.homeSummaryFingerprint()
-        isRefreshingOpeningSummary = true
-        defer {
-            isRefreshingOpeningSummary = false
-        }
-
-        do {
-            let line = try await chatService.sendHomeSummary(
-                config: config,
-                snapshot: store.homeSummarySnapshotText()
-            )
-            let normalized = line.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !normalized.isEmpty else { return }
-            if store.homeSummaryFingerprint() != requestFingerprint {
-                return
-            }
-            store.saveHomeSummaryCache(text: normalized, fingerprint: requestFingerprint)
-            await MainActor.run {
-                if openingLine != normalized {
-                    openingLine = normalized
-                }
-            }
-        } catch {
-            // 保持本地兜底文案，不打断主流程
-        }
-    }
-
-    private func immediateOpeningLine() -> String {
-        if !store.shouldRefreshHomeSummary(), let cached = store.cachedHomeSummaryLine() {
-            return cached
-        }
-        return store.homeOpeningLine()
     }
 
     private func triggerBackendWarmupIfNeeded() {
