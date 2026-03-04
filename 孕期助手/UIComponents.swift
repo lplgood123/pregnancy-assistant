@@ -209,7 +209,7 @@ struct BadgePill: View {
                 .fill(AppTheme.accentBrand)
                 .frame(width: 6, height: 6)
             Text(text)
-                .font(.caption)
+                .font(.system(size: 12))
                 .foregroundStyle(AppTheme.actionPrimary)
         }
         .padding(.horizontal, 12)
@@ -281,9 +281,9 @@ struct QuickCommandStrip: View {
                     } label: {
                         HStack(spacing: 5) {
                             Image(systemName: command.icon)
-                                .font(.caption.weight(.semibold))
+                                .font(.system(size: 12, weight: .semibold))
                             Text(command.title)
-                                .font(.footnote.weight(.semibold))
+                                .font(.system(size: 13, weight: .semibold))
                                 .foregroundStyle(AppTheme.textPrimary)
                         }
                         .padding(.horizontal, 10)

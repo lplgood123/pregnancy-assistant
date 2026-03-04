@@ -250,7 +250,7 @@ struct ChatHomeView: View {
                         let assistantText = message.text.isEmpty ? "我在呢，你继续说。" : message.text
                         AssistantBubble {
                             Text(assistantText)
-                                .font(.subheadline)
+                                .font(.system(size: 16))
                                 .foregroundStyle(AppTheme.textPrimary)
                                 .textSelection(.enabled)
                                 .contextMenu {
@@ -260,14 +260,14 @@ struct ChatHomeView: View {
                                 }
                         }
                         Text(timeLabel(message.createdAt))
-                            .font(.caption2)
+                            .font(.system(size: 11))
                             .foregroundStyle(AppTheme.textHint.opacity(0.7))
                             .padding(.leading, 38)
                     } else {
                         UserBubble {
                             Text(message.text)
-                                .font(.subheadline)
-                                .foregroundStyle(.white)
+                                .font(.system(size: 16))
+                                .foregroundStyle(AppTheme.textPrimary)
                                 .textSelection(.enabled)
                                 .contextMenu {
                                     Button("复制") {
@@ -278,7 +278,7 @@ struct ChatHomeView: View {
                         if message.deliveryStatus == .failed {
                             HStack(spacing: 8) {
                                 Text(message.deliveryError ?? "发送失败")
-                                    .font(.caption2)
+                                    .font(.system(size: 11))
                                     .foregroundStyle(AppTheme.bannerError)
                                 Button {
                                     Task {
@@ -286,7 +286,7 @@ struct ChatHomeView: View {
                                     }
                                 } label: {
                                     Text((isRetryingFailedMessage && failedMessageID == message.id) ? "重试中..." : "重试发送")
-                                        .font(.caption2.weight(.semibold))
+                                        .font(.system(size: 11, weight: .semibold))
                                 }
                                 .buttonStyle(.plain)
                                 .disabled(isTyping || (isRetryingFailedMessage && failedMessageID == message.id))
@@ -294,7 +294,7 @@ struct ChatHomeView: View {
                             .frame(maxWidth: .infinity, alignment: .trailing)
                         }
                         Text(timeLabel(message.createdAt))
-                            .font(.caption2)
+                            .font(.system(size: 11))
                             .foregroundStyle(AppTheme.textHint)
                             .frame(maxWidth: .infinity, alignment: .trailing)
                     }
@@ -307,7 +307,7 @@ struct ChatHomeView: View {
                         ProgressView()
                             .controlSize(.small)
                         Text(typingStageText)
-                            .font(.caption)
+                            .font(.system(size: 14))
                             .foregroundStyle(AppTheme.textSecondary)
                     }
                 }
@@ -478,7 +478,7 @@ struct ChatHomeView: View {
             // 状态提示
             if isRecordingVoice {
                 Text(voicePressState == .canceling ? "松开取消" : "松开发送")
-                    .font(.footnote.weight(.medium))
+                    .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(voicePressState == .canceling ? AppTheme.statusError : AppTheme.statusInfo)
                     .padding(.horizontal, 16)
                     .padding(.bottom, 8)
@@ -489,7 +489,7 @@ struct ChatHomeView: View {
                     ProgressView()
                         .controlSize(.small)
                     Text("图片识别中...")
-                        .font(.footnote)
+                        .font(.system(size: 13))
                         .foregroundStyle(AppTheme.textSecondary)
                 }
                 .padding(.horizontal, 16)
@@ -499,10 +499,10 @@ struct ChatHomeView: View {
             if !errorText.isEmpty {
                 HStack(spacing: 8) {
                     Image(systemName: "exclamationmark.circle.fill")
-                        .font(.caption)
+                        .font(.system(size: 12))
                         .foregroundStyle(AppTheme.statusError)
                     Text(errorText)
-                        .font(.footnote)
+                        .font(.system(size: 13))
                         .foregroundStyle(AppTheme.statusError)
                         .lineLimit(2)
                 }
@@ -588,10 +588,11 @@ struct ChatHomeView: View {
         TextField("", text: $inputText, axis: .vertical)
             .placeholder(when: inputText.isEmpty) {
                 Text("说点什么...")
+                    .font(.system(size: 16))
                     .foregroundStyle(AppTheme.textHint)
             }
             .lineLimit(1...4)
-            .font(.system(size: 15))
+            .font(.system(size: 16))
             .foregroundStyle(AppTheme.textPrimary)
             .tint(AppTheme.actionPrimary)
             .padding(.horizontal, 12)
@@ -619,10 +620,10 @@ struct ChatHomeView: View {
 
         return HStack(spacing: 8) {
             Image(systemName: voiceButtonSymbol)
-                .font(.system(size: 15, weight: .semibold))
+                .font(.system(size: 16, weight: .semibold))
                 .foregroundStyle(voiceButtonForegroundColor)
             Text(voiceActionText)
-                .font(.system(size: 15, weight: .medium))
+                .font(.system(size: 16, weight: .medium))
                 .foregroundStyle(voicePressState == .canceling ? AppTheme.statusError : AppTheme.textSecondary)
             Spacer(minLength: 0)
         }
@@ -1678,36 +1679,19 @@ struct UserBubble<Content: View>: View {
     var body: some View {
         HStack {
             Spacer()
-            // 用户气泡 - Glassmorphism 风格，女性向渐变
+            // 用户气泡 - 浅色背景，黑色文字清晰可读
             content
                 .padding(.horizontal, 14)
                 .padding(.vertical, 10)
                 .background(
                     RoundedRectangle(cornerRadius: 16, style: .continuous)
-                        .fill(
-                            LinearGradient(
-                                colors: [
-                                    Color(hex: "FFB6D9"),
-                                    Color(hex: "E88B9C")
-                                ],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            )
-                        )
-                        .opacity(0.9)
+                        .fill(Color(hex: "E8F5E9"))
                 )
                 .overlay(
                     RoundedRectangle(cornerRadius: 16, style: .continuous)
-                        .strokeBorder(
-                            LinearGradient(
-                                colors: [.white.opacity(0.5), .white.opacity(0.1)],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            ),
-                            lineWidth: 1
-                        )
+                        .strokeBorder(Color(hex: "A5D6A7").opacity(0.4), lineWidth: 1)
                 )
-                .shadow(color: AppTheme.actionPrimary.opacity(0.25), radius: 12, x: 0, y: 4)
+                .shadow(color: Color.black.opacity(0.06), radius: 8, x: 0, y: 2)
                 .frame(maxWidth: 280, alignment: .trailing)
         }
     }
