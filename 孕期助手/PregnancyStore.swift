@@ -2475,28 +2475,28 @@ final class PregnancyStore: ObservableObject {
             return [
                 QuickCommand(title: "今日安排", prompt: "请汇总我今天需要注意的安排：用药、打针、回诊和其他提醒。", icon: "calendar.badge.clock"),
                 QuickCommand(title: "记录妊娠三项", prompt: "我今天做了妊娠三项，帮我记录", icon: "testtube.2"),
-                QuickCommand(title: "用药调整", prompt: "我有用药要调整，帮我记录。请先问我具体要调整哪些药、时间和剂量。", icon: "pills"),
-                QuickCommand(title: "加复查预约", prompt: "我想新增一个复查预约，先问我日期和时间后再帮我记录。", icon: "calendar"),
+                QuickCommand(title: "用药调整", prompt: "我有用药要调整，帮我记录。", icon: "pills"),
+                QuickCommand(title: "加复查预约", prompt: "我想新增一个复查预约，帮我记录。", icon: "calendar"),
                 QuickCommand(title: "明天吃什么药", prompt: "帮我按时段列出明天要吃的药。", icon: "list.bullet.clipboard"),
-                QuickCommand(title: "调整提醒时间", prompt: "我想调整提醒时间，先问我想改哪个时段和改到几点。", icon: "alarm")
+                QuickCommand(title: "调整提醒时间", prompt: "我想调整提醒时间，帮我记录。", icon: "alarm")
             ]
         case .middle:
             return [
                 QuickCommand(title: "今日安排", prompt: "请汇总我今天需要注意的安排：用药、打针、回诊和其他提醒。", icon: "calendar.badge.clock"),
                 QuickCommand(title: "记录NT/唐筛", prompt: "我今天做了NT或唐筛，帮我记录", icon: "chart.bar"),
-                QuickCommand(title: "加复查预约", prompt: "我想新增一个复查预约，先问我日期和时间后再帮我记录。", icon: "cross.case"),
-                QuickCommand(title: "用药调整", prompt: "我有用药要调整，帮我记录。请先问我具体要调整哪些药、时间和剂量。", icon: "pills"),
+                QuickCommand(title: "加复查预约", prompt: "我想新增一个复查预约，帮我记录。", icon: "cross.case"),
+                QuickCommand(title: "用药调整", prompt: "我有用药要调整，帮我记录。", icon: "pills"),
                 QuickCommand(title: "明天吃什么药", prompt: "帮我按时段列出明天要吃的药。", icon: "list.bullet.clipboard"),
-                QuickCommand(title: "调整提醒时间", prompt: "我想调整提醒时间，先问我想改哪个时段和改到几点。", icon: "alarm")
+                QuickCommand(title: "调整提醒时间", prompt: "我想调整提醒时间，帮我记录。", icon: "alarm")
             ]
         case .late:
             return [
                 QuickCommand(title: "今日安排", prompt: "请汇总我今天需要注意的安排：用药、打针、回诊和其他提醒。", icon: "calendar.badge.clock"),
                 QuickCommand(title: "记录胎动", prompt: "我想记录今天胎动情况", icon: "figure.and.child.holdinghands"),
-                QuickCommand(title: "加复查预约", prompt: "我想新增一个复查预约，先问我日期和时间后再帮我记录。", icon: "cross.case"),
-                QuickCommand(title: "用药调整", prompt: "我有用药要调整，帮我记录。请先问我具体要调整哪些药、时间和剂量。", icon: "pills"),
+                QuickCommand(title: "加复查预约", prompt: "我想新增一个复查预约，帮我记录。", icon: "cross.case"),
+                QuickCommand(title: "用药调整", prompt: "我有用药要调整，帮我记录。", icon: "pills"),
                 QuickCommand(title: "明天吃什么药", prompt: "帮我按时段列出明天要吃的药。", icon: "list.bullet.clipboard"),
-                QuickCommand(title: "调整提醒时间", prompt: "我想调整提醒时间，先问我想改哪个时段和改到几点。", icon: "alarm")
+                QuickCommand(title: "调整提醒时间", prompt: "我想调整提醒时间，帮我记录。", icon: "alarm")
             ]
         }
     }
