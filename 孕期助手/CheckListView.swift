@@ -2,17 +2,31 @@ import SwiftUI
 
 enum RecordSegment: String, CaseIterable, Identifiable {
     case medication = "用药"
-    case check = "检查"
+    case check = "检查报告"
     case appointment = "预约"
 
     var id: String { rawValue }
 }
 
 struct CheckListView: View {
+    private enum MedicationSectionItem: Identifiable {
+        case medication(MedicationItem)
+        case injection(taskID: String, plan: InjectionPlan)
+
+        var id: String {
+            switch self {
+            case .medication(let medication):
+                return "med-\(medication.id)"
+            case .injection(let taskID, _):
+                return taskID
+            }
+        }
+    }
+
     private struct MedicationPeriodSection: Identifiable {
         var period: TimePeriod
         var displayTime: String
-        var items: [MedicationItem]
+        var items: [MedicationSectionItem]
         var doneCount: Int
         var pendingCount: Int
         var isPast: Bool
@@ -41,7 +55,7 @@ struct CheckListView: View {
             case .medication(_, let name):
                 return "将删除用药“\(name)”，此操作不可撤销。"
             case .checkRecord:
-                return "将删除这条检查记录，此操作不可撤销。"
+                return "将删除这条检查报告，此操作不可撤销。"
             case .appointment(_, let title):
                 return "将删除预约“\(title)”，此操作不可撤销。"
             }
@@ -162,7 +176,7 @@ struct CheckListView: View {
             Text("记录")
                 .font(.title2.weight(.semibold))
                 .foregroundStyle(AppTheme.textPrimary)
-            Text("用药 / 检查 / 预约，默认展示用药")
+            Text("用药 / 检查报告 / 预约，默认展示用药")
                 .font(.caption)
                 .foregroundStyle(AppTheme.textSecondary)
         }
@@ -171,48 +185,28 @@ struct CheckListView: View {
     private var medicationSection: some View {
         VStack(alignment: .leading, spacing: 10) {
             AppCard {
-                HStack {
-                    Text("查看日期")
-                        .font(.footnote)
-                        .foregroundStyle(AppTheme.textSecondary)
-                    Spacer()
-                    DatePicker(
-                        "",
-                        selection: $selectedMedicationDate,
-                        displayedComponents: .date
-                    )
-                    .labelsHidden()
-                }
+                AppDateField("查看日期", selection: $selectedMedicationDate, titleWidth: 72, displayFormat: "yyyy年M月d日")
             }
             .padding(.horizontal)
 
-            AppCard {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("当日安排")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(AppTheme.textHint)
-                    if store.isInjectionDue(on: selectedMedicationDate) {
-                        Text("\(store.formatDate(selectedMedicationDate)) 需要打针：\(store.state.injectionPlan.title)")
+            if let weightInfo = store.latestWeightComparisonInfo() {
+                AppCard {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("体重对比")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(AppTheme.textHint)
+                        Text(weightInfo.latestText)
                             .font(.footnote.weight(.semibold))
                             .foregroundStyle(AppTheme.textPrimary)
-                        Text(store.state.injectionPlan.detail)
-                            .font(.caption)
-                            .foregroundStyle(AppTheme.textSecondary)
-                    } else if let next = nextInjectionDate(from: selectedMedicationDate) {
-                        Text("\(store.formatDate(selectedMedicationDate)) 当天没有打针安排")
-                            .font(.footnote)
-                            .foregroundStyle(AppTheme.textSecondary)
-                        Text("下一次：\(store.formatDate(next)) · \(store.state.injectionPlan.title)")
-                            .font(.caption)
-                            .foregroundStyle(AppTheme.textSecondary)
-                    } else {
-                        Text("\(store.formatDate(selectedMedicationDate)) 暂无打针安排")
-                            .font(.footnote)
-                            .foregroundStyle(AppTheme.textSecondary)
+                        if let deltaText = weightInfo.deltaText {
+                            Text(deltaText)
+                                .font(.caption)
+                                .foregroundStyle(AppTheme.textSecondary)
+                        }
                     }
                 }
+                .padding(.horizontal)
             }
-            .padding(.horizontal)
 
             StatusProgressCard(title: medicationProgressTitle, done: medicationDoneCount, total: medicationTotalCount)
                 .padding(.horizontal)
@@ -237,52 +231,74 @@ struct CheckListView: View {
         let collapsed = isPeriodCollapsed(section)
         return AppCard {
             VStack(alignment: .leading, spacing: 10) {
-                Button {
-                    togglePeriodCollapsed(section.period)
-                } label: {
-                    HStack {
-                        VStack(alignment: .leading, spacing: 4) {
-                            HStack(spacing: 8) {
-                                Text(section.period.rawValue)
-                                    .font(.subheadline.weight(.semibold))
-                                    .foregroundStyle(AppTheme.textPrimary)
-                                Text("约 \(section.displayTime)")
-                                    .font(.caption)
-                                    .foregroundStyle(AppTheme.textSecondary)
-                            }
-                            HStack(spacing: 6) {
-                                Text("已完成 \(section.doneCount)/\(section.items.count)")
-                                    .font(.caption2.weight(.semibold))
-                                    .foregroundStyle(AppTheme.textSecondary)
-                                if section.pendingCount > 0 {
-                                    Text("未服 \(section.pendingCount) 项")
-                                        .font(.caption2.weight(.semibold))
-                                        .foregroundStyle(section.isPast ? AppTheme.statusError : AppTheme.textSecondary)
-                                }
-                            }
-                        }
-                        Spacer()
-                        Image(systemName: collapsed ? "chevron.down" : "chevron.up")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(AppTheme.textHint)
+                if collapsed {
+                    medicationPeriodHeader(section, collapsed: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .frame(minHeight: 52)
+                        .contentShape(Rectangle())
+                } else {
+                    Button {
+                        togglePeriodCollapsed(section.period)
+                    } label: {
+                        medicationPeriodHeader(section, collapsed: false)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .frame(minHeight: 52)
+                            .contentShape(Rectangle())
                     }
+                    .buttonStyle(.plain)
                 }
-                .buttonStyle(.plain)
-                .appTapTarget(minHeight: 44)
 
                 if !collapsed {
                     ForEach(section.items) { item in
-                        medicationItemRow(item)
+                        medicationSectionItemRow(item)
                     }
                 }
+            }
+        }
+        .overlay {
+            if collapsed {
+                Color.clear
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        togglePeriodCollapsed(section.period)
+                    }
             }
         }
         .opacity(section.pendingCount == 0 ? 0.88 : 1)
     }
 
+    private func medicationPeriodHeader(_ section: MedicationPeriodSection, collapsed: Bool) -> some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 8) {
+                    Text(section.period.rawValue)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(AppTheme.textPrimary)
+                    Text("约 \(section.displayTime)")
+                        .font(.caption)
+                        .foregroundStyle(AppTheme.textSecondary)
+                }
+                HStack(spacing: 6) {
+                    Text("已完成 \(section.doneCount)/\(section.items.count)")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(AppTheme.textSecondary)
+                    if section.pendingCount > 0 {
+                        Text("未服 \(section.pendingCount) 项")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(section.isPast ? AppTheme.statusError : AppTheme.textSecondary)
+                    }
+                }
+            }
+            Spacer()
+            Image(systemName: collapsed ? "chevron.down" : "chevron.up")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(AppTheme.textHint)
+        }
+    }
+
     private func medicationItemRow(_ item: MedicationItem) -> some View {
-        let isDone = isMedicationDone(item)
         let actionable = isViewingToday
+        let isDone = actionable ? isMedicationDone(item) : false
         return VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .top, spacing: 8) {
                 VStack(alignment: .leading, spacing: 3) {
@@ -341,6 +357,67 @@ struct CheckListView: View {
         .clipShape(RoundedRectangle(cornerRadius: 10))
     }
 
+    @ViewBuilder
+    private func medicationSectionItemRow(_ item: MedicationSectionItem) -> some View {
+        switch item {
+        case .medication(let medication):
+            medicationItemRow(medication)
+        case .injection(let taskID, let plan):
+            injectionItemRow(taskID: taskID, plan: plan)
+        }
+    }
+
+    private func injectionItemRow(taskID: String, plan: InjectionPlan) -> some View {
+        let actionable = isViewingToday
+        let isDone = actionable ? store.state.completedDailyTaskIDs.contains(taskID) : false
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .top, spacing: 8) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(plan.title)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(AppTheme.textPrimary)
+                    if !plan.detail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        Text(plan.detail)
+                            .font(.caption)
+                            .foregroundStyle(AppTheme.textSecondary)
+                    }
+                }
+                Spacer()
+                Text(isDone ? "已完成" : "未完成")
+                    .font(.caption2.weight(.semibold))
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(isDone ? AppTheme.statusSuccessSoft : AppTheme.statusErrorSoft)
+                    .foregroundStyle(isDone ? AppTheme.statusSuccess : AppTheme.statusError)
+                    .clipShape(Capsule())
+            }
+
+            HStack(spacing: 10) {
+                Button(isDone ? "改为未完成" : "标记完成") {
+                    store.toggleDailyTask(taskID)
+                }
+                .font(.caption.weight(.semibold))
+                .padding(.horizontal, 10)
+                .frame(minHeight: 44)
+                .background(actionable ? (isDone ? AppTheme.surfaceMuted : AppTheme.actionPrimary) : AppTheme.surfaceMuted)
+                .foregroundStyle(actionable ? (isDone ? AppTheme.textSecondary : .white) : AppTheme.textHint)
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+                .accessibilityValue(isDone ? "已完成" : "未完成")
+                .disabled(!actionable)
+
+                Spacer()
+            }
+            if !actionable {
+                Text("非今天日期，仅查看安排")
+                    .font(.caption2)
+                    .foregroundStyle(AppTheme.textHint)
+            }
+        }
+        .padding(10)
+        .background(AppTheme.surfaceMuted)
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+    }
+
     private var checkSection: some View {
         VStack(alignment: .leading, spacing: 10) {
             ScrollView(.horizontal, showsIndicators: false) {
@@ -359,7 +436,7 @@ struct CheckListView: View {
 
             if filteredRecords.isEmpty {
                 AppCard {
-                    Text("暂无检查记录")
+                    Text("暂无检查报告")
                         .font(.footnote)
                         .foregroundStyle(AppTheme.textSecondary)
                 }
@@ -478,11 +555,13 @@ struct CheckListView: View {
         let viewingToday = selectedDay == todayDay
         let viewingPast = selectedDay < todayDay
         let nowMinutes = store.timeToMinutes(store.currentTimeText()) ?? 0
+        let injectionDue = store.isInjectionDue(on: selectedDay)
+        let injectionTaskID = self.injectionTaskID(for: selectedDay)
 
         return TimePeriod.allCases
             .sorted { $0.sortOrder < $1.sortOrder }
             .compactMap { period in
-                let items = store.activeMedications
+                var sectionItems: [MedicationSectionItem] = store.activeMedications
                     .filter { $0.period == period }
                     .sorted { lhs, rhs in
                         let left = lhs.name.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -492,20 +571,26 @@ struct CheckListView: View {
                         }
                         return left.localizedCompare(right) == .orderedAscending
                     }
-                guard !items.isEmpty else { return nil }
+                    .map { .medication($0) }
+
+                if injectionDue && store.state.injectionPlan.period == period {
+                    sectionItems.append(.injection(taskID: injectionTaskID, plan: store.state.injectionPlan))
+                }
+
+                guard !sectionItems.isEmpty else { return nil }
 
                 let displayTime = ReminderScheduler.semanticAdjustedTimeText(
                     for: period,
                     baseTime: store.reminderTime(for: period)
                 )
                 let periodMinutes = store.timeToMinutes(displayTime) ?? 0
-                let doneCount = viewingToday ? items.filter { isMedicationDone($0) }.count : 0
+                let doneCount = viewingToday ? sectionItems.filter { isSectionItemDone($0) }.count : 0
                 return MedicationPeriodSection(
                     period: period,
                     displayTime: displayTime,
-                    items: items,
+                    items: sectionItems,
                     doneCount: doneCount,
-                    pendingCount: max(items.count - doneCount, 0),
+                    pendingCount: max(sectionItems.count - doneCount, 0),
                     isPast: viewingPast || (viewingToday && nowMinutes > periodMinutes)
                 )
             }
@@ -529,7 +614,7 @@ struct CheckListView: View {
 
     private var medicationProgressTitle: String {
         if isViewingToday { return "今日用药完成" }
-        return "\(store.formatDate(selectedMedicationDate)) 用药安排"
+        return "\(chineseDateText(selectedMedicationDate)) 用药安排"
     }
 
     private var isViewingToday: Bool {
@@ -539,7 +624,7 @@ struct CheckListView: View {
     private var bottomButtonTitle: String {
         switch selectedSegment {
         case .medication: return "+ 新增用药 / 补剂"
-        case .check: return "+ 添加检查记录"
+        case .check: return "+ 添加检查报告"
         case .appointment: return "+ 添加预约"
         }
     }
@@ -559,6 +644,19 @@ struct CheckListView: View {
         store.state.completedDailyTaskIDs.contains("med-\(item.id)")
     }
 
+    private func isSectionItemDone(_ item: MedicationSectionItem) -> Bool {
+        switch item {
+        case .medication(let medication):
+            return isMedicationDone(medication)
+        case .injection(let taskID, _):
+            return store.state.completedDailyTaskIDs.contains(taskID)
+        }
+    }
+
+    private func injectionTaskID(for date: Date) -> String {
+        "injection-\(store.dateKey(for: date))"
+    }
+
     private func toggleMedicationDone(_ item: MedicationItem) {
         let id = "med-\(item.id)"
         let doneBefore = store.state.completedDailyTaskIDs.contains(id)
@@ -566,6 +664,13 @@ struct CheckListView: View {
         if !doneBefore {
             ReminderScheduler.cancelFollowUp(for: item.period)
         }
+    }
+
+    private func chineseDateText(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.dateFormat = "yyyy年M月d日"
+        return formatter.string(from: date)
     }
 
     private func isPeriodCollapsed(_ section: MedicationPeriodSection) -> Bool {
@@ -602,21 +707,6 @@ struct CheckListView: View {
         }
     }
 
-    private func nextInjectionDate(from date: Date) -> Date? {
-        let calendar = Calendar.current
-        var current = calendar.startOfDay(for: date)
-        let end = calendar.startOfDay(for: store.state.injectionPlan.endDate)
-        while current <= end {
-            if store.isInjectionDue(on: current) {
-                return current
-            }
-            guard let next = calendar.date(byAdding: .day, value: 1, to: current) else {
-                return nil
-            }
-            current = next
-        }
-        return nil
-    }
 }
 
 struct AppointmentEditorSheet: View {
@@ -626,7 +716,8 @@ struct AppointmentEditorSheet: View {
     let onSave: (AppointmentItem) -> Void
 
     @State private var title: String
-    @State private var dueDate: Date
+    @State private var appointmentDate: Date
+    @State private var appointmentTime: Date
     @State private var detail: String
     @State private var errorText = ""
 
@@ -634,9 +725,20 @@ struct AppointmentEditorSheet: View {
         self.appointment = appointment
         self.onSave = onSave
 
-        let defaultDate = Calendar.current.date(byAdding: .day, value: 1, to: Date()) ?? Date()
+        let calendar = Calendar.current
+        let defaultDate = calendar.date(byAdding: .day, value: 1, to: Date()) ?? Date()
+        let defaultDueDate = calendar.date(bySettingHour: 9, minute: 0, second: 0, of: defaultDate) ?? defaultDate
+        let resolvedDueDate = appointment?.dueDate ?? defaultDueDate
+        let dueDay = calendar.startOfDay(for: resolvedDueDate)
+        let dueComponents = calendar.dateComponents([.hour, .minute], from: resolvedDueDate)
+        let hasExplicitTime = (dueComponents.hour ?? 0) != 0 || (dueComponents.minute ?? 0) != 0
+        let timeHour = hasExplicitTime ? (dueComponents.hour ?? 9) : 9
+        let timeMinute = hasExplicitTime ? (dueComponents.minute ?? 0) : 0
+        let dueTime = calendar.date(bySettingHour: timeHour, minute: timeMinute, second: 0, of: Date()) ?? Date()
+
         _title = State(initialValue: appointment?.title ?? "")
-        _dueDate = State(initialValue: appointment?.dueDate ?? Calendar.current.date(bySettingHour: 9, minute: 0, second: 0, of: defaultDate) ?? defaultDate)
+        _appointmentDate = State(initialValue: dueDay)
+        _appointmentTime = State(initialValue: dueTime)
         _detail = State(initialValue: appointment?.detail ?? "")
     }
 
@@ -649,7 +751,8 @@ struct AppointmentEditorSheet: View {
                     AppCard {
                         VStack(alignment: .leading, spacing: 10) {
                             TextField("预约标题", text: $title)
-                            DatePicker("预约时间", selection: $dueDate)
+                            AppDateField("预约日期", selection: $appointmentDate, titleWidth: 88, displayFormat: "yyyy年M月d日")
+                            AppTimeField("预约时间", selection: $appointmentTime, titleWidth: 88)
                             TextField("备注（可选）", text: $detail, axis: .vertical)
                                 .lineLimit(2...4)
                         }
@@ -685,6 +788,18 @@ struct AppointmentEditorSheet: View {
             errorText = "请填写预约标题"
             return
         }
+
+        let calendar = Calendar.current
+        let day = calendar.dateComponents([.year, .month, .day], from: appointmentDate)
+        let hm = calendar.dateComponents([.hour, .minute], from: appointmentTime)
+        var merged = DateComponents()
+        merged.year = day.year
+        merged.month = day.month
+        merged.day = day.day
+        merged.hour = hm.hour
+        merged.minute = hm.minute
+        merged.second = 0
+        let dueDate = calendar.date(from: merged) ?? appointmentDate
 
         let item = AppointmentItem(
             id: appointment?.id ?? UUID().uuidString,

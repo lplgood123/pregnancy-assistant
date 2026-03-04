@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 enum AIRequestErrorKind: String {
     case network
@@ -47,7 +48,7 @@ struct AIRequestError: LocalizedError {
         case .timedOut:
             return AIRequestError(
                 kind: .timeout,
-                userMessage: "AI 服务正在启动中，请稍等片刻后重试。",
+                userMessage: "AI 服务器响应超时，请稍后重试。",
                 rawMessage: urlError.localizedDescription,
                 httpStatus: nil
             )
@@ -183,13 +184,17 @@ private func assistantDisplayText(from raw: String) -> String {
         let name = action.slots["item_name"] ?? "用药"
         return "已识别：新增用药（\(name)）"
     case "create_check_record":
-        return "已识别：新增检查记录"
+        return "已识别：新增检查报告"
+    case "create_appointment":
+        return "已识别：新增预约"
     case "create_reminder":
         let name = action.slots["item_name"] ?? "提醒"
         return "已识别：创建提醒（\(name)）"
     case "query_schedule":
         let date = action.slots["date_semantic"] ?? "今天"
         return "已识别：查询\(date)用药安排"
+    case "update_profile":
+        return "已识别：记录身高体重"
     case "update_reminder_time":
         return "已识别：更新提醒时间"
     default:
@@ -243,20 +248,20 @@ struct AIBackendChatService {
     }
 
     private let primaryPolicy = AIRequestPolicy(
-        requestTimeout: 30,
-        resourceTimeout: 35,
-        maxAttempts: 3,
-        backoffs: [1.5, 3.0],
-        maxWait: 60
+        requestTimeout: 45,
+        resourceTimeout: 55,
+        maxAttempts: 2,
+        backoffs: [1.8],
+        maxWait: 70
     )
     private let compensationPolicy = AIRequestPolicy(
-        requestTimeout: 20,
-        resourceTimeout: 25,
-        maxAttempts: 2,
-        backoffs: [1.0],
-        maxWait: 30
+        requestTimeout: 30,
+        resourceTimeout: 36,
+        maxAttempts: 1,
+        backoffs: [],
+        maxWait: 35
     )
-    private let endToEndBudget: TimeInterval = 90
+    private let endToEndBudget: TimeInterval = 75
     private let warmupTimeout: TimeInterval = 60
 
     func send(config: AIConfig, context: String, history: [StoredAIMessage], userInput: String) async throws -> String {
@@ -288,85 +293,148 @@ struct AIBackendChatService {
             model: config.model
         )
 
-        let endpoint = buildChatEndpoint(config.baseURL)
+        let baseCandidates = parseBaseURLs(config.baseURL)
+        guard !baseCandidates.isEmpty else {
+            throw AIRequestError(
+                kind: .client,
+                userMessage: "AI 后端地址为空，请检查配置。",
+                rawMessage: config.baseURL,
+                httpStatus: nil
+            )
+        }
         let requestID = shortRequestID()
         let startedAt = Date()
-
         defer {
             Task { @MainActor in
                 onStage?(.finished)
             }
         }
 
-        await onStage?(.connecting)
+        var lastError: AIRequestError?
 
-        do {
-            return try await withOverallTimeout(
-                seconds: endToEndBudget,
-                userMessage: "AI 服务正在启动中，请稍等片刻后重试。"
-            ) {
-                do {
-                    return try await requestTextWithPolicy(
-                        config: config,
-                        endpoint: endpoint,
-                        body: body,
-                        policy: primaryPolicy,
-                        phase: "primary",
-                        requestID: requestID,
-                        onStage: onStage
-                    )
-                } catch let primaryError as AIRequestError {
-                    guard shouldCompensate(after: primaryError) else {
-                        throw primaryError
+        for (index, baseURL) in baseCandidates.enumerated() {
+            let endpoint = buildChatEndpoint(baseURL)
+            await onStage?(.connecting)
+            await quickWarmupBeforeSendIfNeeded(baseURL: baseURL, requestID: requestID)
+
+            do {
+                return try await withOverallTimeout(
+                    seconds: endToEndBudget,
+                    userMessage: "暂时连不上 AI 服务器，请稍后重试。"
+                ) {
+                    do {
+                        return try await requestTextWithPolicy(
+                            config: config,
+                            endpoint: endpoint,
+                            body: body,
+                            policy: primaryPolicy,
+                            phase: "primary",
+                            requestID: requestID,
+                            onStage: onStage
+                        )
+                    } catch let primaryError as AIRequestError {
+                        guard shouldCompensate(after: primaryError) else {
+                            throw primaryError
+                        }
+
+                        await onStage?(.compensating)
+                        return try await requestTextWithPolicy(
+                            config: config,
+                            endpoint: endpoint,
+                            body: body,
+                            policy: compensationPolicy,
+                            phase: "compensation",
+                            requestID: requestID,
+                            onStage: nil
+                        )
                     }
-
-                    await onStage?(.compensating)
-                    return try await requestTextWithPolicy(
-                        config: config,
-                        endpoint: endpoint,
-                        body: body,
-                        policy: compensationPolicy,
-                        phase: "compensation",
-                        requestID: requestID,
-                        onStage: nil
-                    )
                 }
+            } catch {
+                let mapped = AIRequestError.map(error)
+                lastError = mapped
+                debugLog(
+                    requestID: requestID,
+                    phase: "final",
+                    attempt: 0,
+                    kind: mapped.kind.rawValue,
+                    status: mapped.httpStatus,
+                    elapsedMs: elapsedMilliseconds(since: startedAt),
+                    message: "failed endpoint=\(endpoint)"
+                )
+
+                let canFallback = index < baseCandidates.count - 1 && shouldFallbackToNextEndpoint(for: mapped)
+                if canFallback {
+                    continue
+                }
+                throw mapped
             }
-        } catch {
-            let mapped = AIRequestError.map(error)
-            debugLog(
-                requestID: requestID,
-                phase: "final",
-                attempt: 0,
-                kind: mapped.kind.rawValue,
-                status: mapped.httpStatus,
-                elapsedMs: elapsedMilliseconds(since: startedAt),
-                message: "failed endpoint=\(endpoint)"
-            )
-            throw mapped
         }
+
+        throw lastError ?? AIRequestError(
+            kind: .unknown,
+            userMessage: "请求失败，请稍后重试。",
+            rawMessage: "No endpoint candidates available.",
+            httpStatus: nil
+        )
     }
 
     func sendHomeSummary(config: AIConfig, snapshot: String) async throws -> String {
         let body = HomeSummaryRequestBody(snapshot: snapshot, model: config.model)
-        let raw = try await requestTextWithPolicy(
-            config: config,
-            endpoint: buildHomeSummaryEndpoint(config.baseURL),
-            body: body,
-            policy: primaryPolicy,
-            phase: "summary",
-            requestID: shortRequestID(),
-            onStage: nil
-        )
-        let normalized = normalizePlainText(raw)
-        if normalized.isEmpty {
-            throw NSError(domain: "ai", code: 4, userInfo: [NSLocalizedDescriptionKey: "首页总结为空"])
+        let requestID = shortRequestID()
+        let candidates = parseBaseURLs(config.baseURL)
+        guard !candidates.isEmpty else {
+            throw AIRequestError(
+                kind: .client,
+                userMessage: "AI 后端地址为空，请检查配置。",
+                rawMessage: config.baseURL,
+                httpStatus: nil
+            )
         }
-        return normalized
+
+        var lastError: AIRequestError?
+        for (index, baseURL) in candidates.enumerated() {
+            do {
+                let raw = try await requestTextWithPolicy(
+                    config: config,
+                    endpoint: buildHomeSummaryEndpoint(baseURL),
+                    body: body,
+                    policy: primaryPolicy,
+                    phase: "summary",
+                    requestID: requestID,
+                    onStage: nil
+                )
+                let normalized = normalizePlainText(raw)
+                if normalized.isEmpty {
+                    throw AIRequestError(
+                        kind: .server,
+                        userMessage: "首页总结为空，请稍后重试。",
+                        rawMessage: "home summary empty",
+                        httpStatus: nil
+                    )
+                }
+                return normalized
+            } catch {
+                let mapped = AIRequestError.map(error)
+                lastError = mapped
+                let canFallback = index < candidates.count - 1 && shouldFallbackToNextEndpoint(for: mapped)
+                if canFallback {
+                    continue
+                }
+                throw mapped
+            }
+        }
+
+        throw lastError ?? AIRequestError(
+            kind: .unknown,
+            userMessage: "请求失败，请稍后重试。",
+            rawMessage: "No summary endpoint candidates available.",
+            httpStatus: nil
+        )
     }
 
     func warmup(config: AIConfig) async {
-        guard let url = buildWarmupURL(from: config.baseURL) else { return }
+        guard let baseURL = parseBaseURLs(config.baseURL).first,
+              let url = buildWarmupURL(from: baseURL) else { return }
 
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
@@ -598,6 +666,47 @@ struct AIBackendChatService {
         return URLSession(configuration: configuration)
     }
 
+    private func makeQuickWarmupSession() -> URLSession {
+        let configuration = URLSessionConfiguration.default
+        configuration.timeoutIntervalForRequest = 8
+        configuration.timeoutIntervalForResource = 10
+        configuration.waitsForConnectivity = true
+        return URLSession(configuration: configuration)
+    }
+
+    private func quickWarmupBeforeSendIfNeeded(baseURL: String, requestID: String) async {
+        guard let url = buildWarmupURL(from: baseURL) else { return }
+        guard isLikelyRenderHost(url) else { return }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.timeoutInterval = 8
+
+        do {
+            let (_, response) = try await makeQuickWarmupSession().data(for: request)
+            let status = (response as? HTTPURLResponse)?.statusCode
+            debugLog(
+                requestID: requestID,
+                phase: "quick-warmup",
+                attempt: 0,
+                kind: "-",
+                status: status,
+                elapsedMs: 0,
+                message: "ok url=\(url.absoluteString)"
+            )
+        } catch {
+            debugLog(
+                requestID: requestID,
+                phase: "quick-warmup",
+                attempt: 0,
+                kind: AIRequestError.map(error).kind.rawValue,
+                status: nil,
+                elapsedMs: 0,
+                message: "ignored failure \(error.localizedDescription)"
+            )
+        }
+    }
+
     private func shouldRetry(error: AIRequestError, attempt: Int, maxAttempts: Int) -> Bool {
         guard attempt < maxAttempts else { return false }
         switch error.kind {
@@ -619,6 +728,35 @@ struct AIBackendChatService {
         case .unauthorized, .client, .unknown:
             return false
         }
+    }
+
+    private func shouldFallbackToNextEndpoint(for error: AIRequestError) -> Bool {
+        switch error.kind {
+        case .network, .timeout, .dns:
+            return true
+        case .server:
+            return error.httpStatus == nil || error.httpStatus == 502 || error.httpStatus == 503 || error.httpStatus == 504
+        case .unauthorized, .client, .unknown:
+            return false
+        }
+    }
+
+    private func isLikelyRenderHost(_ url: URL) -> Bool {
+        guard let host = url.host?.lowercased() else { return false }
+        return host.contains("onrender.com")
+    }
+
+    private func parseBaseURLs(_ raw: String) -> [String] {
+        let parts = raw
+            .components(separatedBy: CharacterSet(charactersIn: ",;\n"))
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+
+        var unique: [String] = []
+        for item in parts where !unique.contains(item) {
+            unique.append(item)
+        }
+        return unique
     }
 
     private func backoffBeforeRetry(attempt: Int, backoffs: [TimeInterval]) async throws {
@@ -860,6 +998,12 @@ struct AIAssistantView: View {
                                         .font(.caption)
                                         .foregroundStyle(.secondary)
                                     Text(message.text)
+                                        .textSelection(.enabled)
+                                        .contextMenu {
+                                            Button("复制") {
+                                                copyToPasteboard(message.text)
+                                            }
+                                        }
                                 }
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 .padding(.vertical, 2)
@@ -913,6 +1057,10 @@ struct AIAssistantView: View {
                 triggerBackendWarmupIfNeeded()
             }
         }
+    }
+
+    private func copyToPasteboard(_ text: String) {
+        UIPasteboard.general.string = text
     }
 
     private func sendMessage() async {

@@ -1,5 +1,205 @@
 import SwiftUI
 
+struct AppDateField: View {
+    let title: String
+    @Binding var selection: Date
+    var titleWidth: CGFloat? = 88
+    var displayFormat: String = "yyyy年M月d日"
+    var range: ClosedRange<Date>? = nil
+
+    @State private var showingPicker = false
+    @State private var draftSelection = Date()
+
+    init(
+        _ title: String,
+        selection: Binding<Date>,
+        titleWidth: CGFloat? = 88,
+        displayFormat: String = "yyyy年M月d日",
+        range: ClosedRange<Date>? = nil
+    ) {
+        self.title = title
+        _selection = selection
+        self.titleWidth = titleWidth
+        self.displayFormat = displayFormat
+        self.range = range
+    }
+
+    var body: some View {
+        HStack(spacing: 8) {
+            if let titleWidth {
+                Text(title)
+                    .font(.footnote)
+                    .foregroundStyle(AppTheme.textSecondary)
+                    .frame(width: titleWidth, alignment: .leading)
+            } else {
+                Text(title)
+                    .font(.footnote)
+                    .foregroundStyle(AppTheme.textSecondary)
+            }
+
+            Spacer(minLength: 0)
+
+            Button {
+                draftSelection = selection
+                showingPicker = true
+            } label: {
+                HStack(spacing: 6) {
+                    Text(formattedDate(selection))
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(AppTheme.textPrimary)
+                    Image(systemName: "calendar")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(AppTheme.textHint)
+                }
+                .frame(minHeight: 44)
+                .padding(.horizontal, 2)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .appTapTarget()
+        }
+        .sheet(isPresented: $showingPicker) {
+            NavigationStack {
+                VStack(spacing: 0) {
+                    if let range {
+                        DatePicker("", selection: $draftSelection, in: range, displayedComponents: .date)
+                            .datePickerStyle(.graphical)
+                            .labelsHidden()
+                            .environment(\.locale, Locale(identifier: "zh_CN"))
+                            .padding(.horizontal)
+                            .padding(.top, 12)
+                    } else {
+                        DatePicker("", selection: $draftSelection, displayedComponents: .date)
+                            .datePickerStyle(.graphical)
+                            .labelsHidden()
+                            .environment(\.locale, Locale(identifier: "zh_CN"))
+                            .padding(.horizontal)
+                            .padding(.top, 12)
+                    }
+
+                    Spacer(minLength: 0)
+                }
+                .navigationTitle("选择日期")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("取消") { showingPicker = false }
+                    }
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("确定") {
+                            selection = draftSelection
+                            showingPicker = false
+                        }
+                    }
+                }
+            }
+            .presentationDetents([.medium, .large])
+            .presentationDragIndicator(.visible)
+        }
+    }
+
+    private func formattedDate(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.dateFormat = displayFormat
+        return formatter.string(from: date)
+    }
+}
+
+struct AppTimeField: View {
+    let title: String
+    @Binding var selection: Date
+    var titleWidth: CGFloat? = 88
+    var displayFormat: String = "HH:mm"
+
+    @State private var showingPicker = false
+    @State private var draftSelection = Date()
+
+    init(
+        _ title: String,
+        selection: Binding<Date>,
+        titleWidth: CGFloat? = 88,
+        displayFormat: String = "HH:mm"
+    ) {
+        self.title = title
+        _selection = selection
+        self.titleWidth = titleWidth
+        self.displayFormat = displayFormat
+    }
+
+    var body: some View {
+        HStack(spacing: 8) {
+            if let titleWidth {
+                Text(title)
+                    .font(.footnote)
+                    .foregroundStyle(AppTheme.textSecondary)
+                    .frame(width: titleWidth, alignment: .leading)
+            } else {
+                Text(title)
+                    .font(.footnote)
+                    .foregroundStyle(AppTheme.textSecondary)
+            }
+
+            Spacer(minLength: 0)
+
+            Button {
+                draftSelection = selection
+                showingPicker = true
+            } label: {
+                HStack(spacing: 6) {
+                    Text(formattedTime(selection))
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(AppTheme.textPrimary)
+                    Image(systemName: "clock")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(AppTheme.textHint)
+                }
+                .frame(minHeight: 44)
+                .padding(.horizontal, 2)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .appTapTarget()
+        }
+        .sheet(isPresented: $showingPicker) {
+            NavigationStack {
+                VStack(spacing: 0) {
+                    DatePicker("", selection: $draftSelection, displayedComponents: .hourAndMinute)
+                        .datePickerStyle(.wheel)
+                        .labelsHidden()
+                        .environment(\.locale, Locale(identifier: "zh_CN"))
+                        .padding(.horizontal)
+                        .padding(.top, 12)
+
+                    Spacer(minLength: 0)
+                }
+                .navigationTitle("选择时间")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("取消") { showingPicker = false }
+                    }
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("确定") {
+                            selection = draftSelection
+                            showingPicker = false
+                        }
+                    }
+                }
+            }
+            .presentationDetents([.medium])
+            .presentationDragIndicator(.visible)
+        }
+    }
+
+    private func formattedTime(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.dateFormat = displayFormat
+        return formatter.string(from: date)
+    }
+}
+
 struct BadgePill: View {
     let text: String
 
@@ -79,15 +279,16 @@ struct QuickCommandStrip: View {
                     Button {
                         onTap(command)
                     } label: {
-                        HStack(spacing: 6) {
+                        HStack(spacing: 5) {
                             Image(systemName: command.icon)
                                 .font(.caption.weight(.semibold))
                             Text(command.title)
                                 .font(.footnote.weight(.semibold))
                                 .foregroundStyle(AppTheme.textPrimary)
                         }
-                        .padding(.horizontal, 12)
-                        .frame(minHeight: 44)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .frame(minHeight: 34)
                         .background(AppTheme.cardAlt)
                         .overlay(
                             Capsule()
@@ -96,6 +297,7 @@ struct QuickCommandStrip: View {
                         .clipShape(Capsule())
                     }
                     .buttonStyle(.plain)
+                    .appTapTarget(minHeight: 44)
                 }
             }
             .padding(.horizontal, 2)
@@ -224,8 +426,8 @@ struct ReminderCard: View {
                     .font(.footnote.weight(.semibold))
                     .padding(.horizontal, 12)
                     .frame(minHeight: 44)
-                    .background(doneEnabled ? Color(hex: "EDF7F1") : AppTheme.surfaceMuted)
-                    .foregroundStyle(doneEnabled ? Color(hex: "6BAB8A") : AppTheme.textHint)
+                    .background(doneEnabled ? AppTheme.statusSuccessSoft : AppTheme.surfaceMuted)
+                    .foregroundStyle(doneEnabled ? AppTheme.statusSuccess : AppTheme.textHint)
                     .clipShape(RoundedRectangle(cornerRadius: 8))
                     .disabled(!doneEnabled)
                 Button("调整时间", action: onAdjust)
@@ -267,7 +469,7 @@ struct TipsCard: View {
                     HStack(spacing: 8) {
                         Circle()
                             .stroke(AppTheme.border, lineWidth: 1)
-                            .background(tip.done ? Color(hex: "6BAB8A") : Color.clear)
+                            .background(tip.done ? AppTheme.statusSuccess : Color.clear)
                             .clipShape(Circle())
                             .frame(width: 16, height: 16)
                         Text(tip.text)
@@ -330,8 +532,8 @@ struct TimelineRow: View {
                         .font(.caption.weight(.semibold))
                         .padding(.horizontal, 10)
                         .frame(minHeight: 44)
-                        .background(item.isCompleted ? Color(hex: "EDF7F1") : AppTheme.actionPrimary)
-                        .foregroundStyle(item.isCompleted ? Color(hex: "6BAB8A") : .white)
+                        .background(item.isCompleted ? AppTheme.statusSuccessSoft : AppTheme.actionPrimary)
+                        .foregroundStyle(item.isCompleted ? AppTheme.statusSuccess : .white)
                         .clipShape(RoundedRectangle(cornerRadius: 8))
                 }
             }
@@ -469,7 +671,7 @@ struct RecordTypeBadge: View {
         case .pregnancyPanel: return AppTheme.actionPrimary
         case .nt: return AppTheme.statusInfo
         case .tang: return Color(hex: "A48BBF")
-        case .ultrasound: return Color(hex: "6BAB8A")
+        case .ultrasound: return AppTheme.statusSuccess
         case .cbc: return Color(hex: "D4A94E")
         case .custom: return AppTheme.textSecondary
         }
@@ -480,7 +682,7 @@ struct RecordTypeBadge: View {
         case .pregnancyPanel: return AppTheme.accentSoft
         case .nt: return AppTheme.statusInfoSoft
         case .tang: return Color(hex: "F3EFF8")
-        case .ultrasound: return Color(hex: "EDF7F1")
+        case .ultrasound: return AppTheme.statusSuccessSoft
         case .cbc: return Color(hex: "FFF8E8")
         case .custom: return AppTheme.surfaceMuted
         }
@@ -501,8 +703,8 @@ struct PlanTaskRow: View {
 
             Button(action: onToggle) {
                 Circle()
-                    .stroke(item.isCompleted ? Color(hex: "6BAB8A") : AppTheme.border, lineWidth: 2)
-                    .background(item.isCompleted ? Color(hex: "6BAB8A") : Color.clear)
+                    .stroke(item.isCompleted ? AppTheme.statusSuccess : AppTheme.border, lineWidth: 2)
+                    .background(item.isCompleted ? AppTheme.statusSuccess : Color.clear)
                     .clipShape(Circle())
                     .frame(width: 24, height: 24)
                     .overlay(

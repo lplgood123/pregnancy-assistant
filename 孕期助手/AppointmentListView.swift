@@ -31,7 +31,8 @@ struct AppointmentListView: View {
                 .scrollContentBackground(.hidden)
                 .safeAreaInset(edge: .bottom) {
                     Color.clear
-                        .frame(height: AppLayout.scrollTailPadding)
+                        .frame(height: AppLayout.tabPageScrollTailPadding)
+                        .allowsHitTesting(false)
                 }
             }
             .navigationTitle("产检预约")

@@ -26,6 +26,7 @@ struct PregnancyAssistantApp: App {
                 }
             }
             .environmentObject(store)
+            .environment(\.locale, Locale(identifier: "zh_CN"))
             .preferredColorScheme(.light)  // 强制浅色模式，Glassmorphism 设计
         }
     }

@@ -1,5 +1,14 @@
+import Foundation
 import SwiftUI
 import UIKit
+
+private struct ComposerDockHeightPreferenceKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
 
 struct ChatHomeView: View {
     private enum OCRProcessingState: Equatable {
@@ -42,6 +51,7 @@ struct ChatHomeView: View {
 
     @EnvironmentObject private var store: PregnancyStore
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.scenePhase) private var scenePhase
 
     @State private var inputText = ""
     @State private var chatMessages: [HomeChatMessage] = []
@@ -64,6 +74,7 @@ struct ChatHomeView: View {
     @State private var ocrProcessingState: OCRProcessingState = .idle
     @State private var showImageSourceDialog = false
     @State private var imageSource: ImageSource?
+    @State private var composerDockHeight: CGFloat = 0
     @FocusState private var inputFocused: Bool
     @StateObject private var speechInput = SpeechInputService()
 
@@ -73,7 +84,9 @@ struct ChatHomeView: View {
     private let executableIntents: Set<String> = [
         "create_medication",
         "create_check_record",
+        "create_appointment",
         "create_reminder",
+        "update_profile",
         "update_reminder_time"
     ]
 
@@ -97,7 +110,7 @@ struct ChatHomeView: View {
                         }
                         .padding(.horizontal)
                         .padding(.top, 12)
-                        .padding(.bottom, AppLayout.scrollTailPadding)
+                        .padding(.bottom, conversationBottomPadding)
                     }
                     .contentShape(Rectangle())
                     .simultaneousGesture(
@@ -114,31 +127,41 @@ struct ChatHomeView: View {
                         store.clearExpiredHomeSummaryCacheIfNeeded()
                         openingLine = immediateOpeningLine()
                         initializeSessionIfNeeded()
+                        injectDailyGreetingIfNeeded()
                         triggerBackendWarmupIfNeeded()
                         Task { await refreshOpeningLineWithAI(force: false) }
-                        scrollToBottom(proxy)
+                        scrollToBottomStable(proxy)
                     }
                     .onChange(of: chatMessages.count) { _, _ in
                         store.saveHomeChatMessages(chatMessages)
-                        scrollToBottom(proxy)
+                        scrollToBottomStable(proxy)
                     }
                     .onChange(of: isTyping) { _, _ in
-                        scrollToBottom(proxy)
+                        scrollToBottomStable(proxy)
                     }
-                    .onChange(of: inputFocused) { _, focused in
-                        guard !focused else { return }
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
-                            scrollToBottom(proxy)
-                        }
+                    .onChange(of: inputFocused) { _, _ in
+                        scrollToBottomStable(proxy)
                     }
                     .onChange(of: tabBarVisible) { _, _ in
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
-                            scrollToBottom(proxy)
-                        }
+                        scrollToBottomStable(proxy)
+                    }
+                    .onChange(of: composerDockHeight) { _, _ in
+                        scrollToBottomStable(proxy)
                     }
                     .onChange(of: store.homeSummaryFingerprint()) { _, _ in
                         openingLine = immediateOpeningLine()
                         Task { await refreshOpeningLineWithAI(force: false) }
+                    }
+                    .onChange(of: store.resetEpoch) { _, _ in
+                        clearLocalSessionState()
+                        initializeSessionIfNeeded()
+                        injectDailyGreetingIfNeeded()
+                        scrollToBottomStable(proxy)
+                    }
+                    .onChange(of: scenePhase) { _, newPhase in
+                        guard newPhase == .active else { return }
+                        injectDailyGreetingIfNeeded()
+                        scrollToBottomStable(proxy)
                     }
                 }
             }
@@ -147,6 +170,17 @@ struct ChatHomeView: View {
             }
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 composerDock
+                    .background(
+                        GeometryReader { proxy in
+                            Color.clear
+                                .preference(key: ComposerDockHeightPreferenceKey.self, value: proxy.size.height)
+                        }
+                    )
+            }
+            .onPreferenceChange(ComposerDockHeightPreferenceKey.self) { height in
+                let normalizedHeight = max(height, 0)
+                guard abs(normalizedHeight - composerDockHeight) > 0.5 else { return }
+                composerDockHeight = normalizedHeight
             }
             .font(AppTheme.bodyFont)
             .toolbar(.hidden, for: .navigationBar)
@@ -172,7 +206,7 @@ struct ChatHomeView: View {
             } message: {
                 Text(pendingSummary())
             }
-            .confirmationDialog("上传检查单", isPresented: $showImageSourceDialog, titleVisibility: .visible) {
+            .confirmationDialog("上传检查报告", isPresented: $showImageSourceDialog, titleVisibility: .visible) {
                 Button("拍照") {
                     guard UIImagePickerController.isSourceTypeAvailable(.camera) else {
                         errorText = "当前设备不支持拍照，请改用相册上传。"
@@ -203,20 +237,34 @@ struct ChatHomeView: View {
     }
 
     private var conversationSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        let openingText = openingLine.isEmpty ? store.homeOpeningLine() : openingLine
+        return VStack(alignment: .leading, spacing: 10) {
             AssistantBubble {
-                Text(openingLine.isEmpty ? store.homeOpeningLine() : openingLine)
+                Text(openingText)
                     .font(.subheadline)
                     .foregroundStyle(AppTheme.textPrimary)
+                    .textSelection(.enabled)
+                    .contextMenu {
+                        Button("复制") {
+                            copyToPasteboard(openingText)
+                        }
+                    }
             }
 
             ForEach(visibleMessages) { message in
                 VStack(alignment: .leading, spacing: 4) {
                     if message.role == .assistant {
+                        let assistantText = message.text.isEmpty ? "我在呢，你继续说。" : message.text
                         AssistantBubble {
-                            Text(message.text.isEmpty ? "我在呢，你继续说。" : message.text)
+                            Text(assistantText)
                                 .font(.subheadline)
                                 .foregroundStyle(AppTheme.textPrimary)
+                                .textSelection(.enabled)
+                                .contextMenu {
+                                    Button("复制") {
+                                        copyToPasteboard(assistantText)
+                                    }
+                                }
                         }
                         Text(timeLabel(message.createdAt))
                             .font(.caption2)
@@ -227,6 +275,12 @@ struct ChatHomeView: View {
                             Text(message.text)
                                 .font(.subheadline)
                                 .foregroundStyle(.white)
+                                .textSelection(.enabled)
+                                .contextMenu {
+                                    Button("复制") {
+                                        copyToPasteboard(message.text)
+                                    }
+                                }
                         }
                         if message.deliveryStatus == .failed {
                             HStack(spacing: 8) {
@@ -266,6 +320,10 @@ struct ChatHomeView: View {
                 }
             }
         }
+    }
+
+    private func copyToPasteboard(_ text: String) {
+        UIPasteboard.general.string = text
     }
 
     private var topFixedInfoBar: some View {
@@ -573,6 +631,35 @@ struct ChatHomeView: View {
         openingLine = immediateOpeningLine()
     }
 
+    private func clearLocalSessionState() {
+        resetVoiceState(stopRecognition: true)
+        inputText = ""
+        chatMessages = []
+        pendingAction = nil
+        showConfirm = false
+        errorText = ""
+        isTyping = false
+        typingStageText = "小助手正在思考…"
+        failedMessageID = nil
+        failedUserInput = nil
+        isRetryingFailedMessage = false
+        ocrProcessingState = .idle
+        showImageSourceDialog = false
+        imageSource = nil
+    }
+
+    private func injectDailyGreetingIfNeeded(now: Date = Date()) {
+        if chatMessages.isEmpty {
+            let stored = store.homeChatMessages()
+            if !stored.isEmpty {
+                chatMessages = stored
+            }
+        }
+        guard let greeting = store.takeDailyGreetingIfNeeded(now: now) else { return }
+        chatMessages.append(greeting)
+        store.saveHomeChatMessages(chatMessages)
+    }
+
     private func restorePendingActionIfNeeded() {
         if pendingAction != nil { return }
         guard let lastPending = store.aiPendingActions().last else { return }
@@ -641,6 +728,13 @@ struct ChatHomeView: View {
         let oldBreakCount = previous.filter { $0 == "\n" }.count
         let newBreakCount = current.filter { $0 == "\n" }.count
         guard newBreakCount > oldBreakCount else { return }
+
+        // 仅在“原文本 + 单个末尾换行”时视为键盘发送，避免粘贴多行文本被误发送。
+        let isSingleTrailingNewlineSubmit =
+            current.hasSuffix("\n") &&
+            current.dropLast() == previous &&
+            newBreakCount == oldBreakCount + 1
+        guard isSingleTrailingNewlineSubmit else { return }
 
         let candidate = current
             .replacingOccurrences(of: "\n", with: "")
@@ -863,7 +957,26 @@ struct ChatHomeView: View {
     private func applyAssistantResponse(_ jsonText: String, userInput: String) {
         if let action = AIParse.parse(jsonText) {
             let normalizedIntent = normalizedIntent(from: action.intent)
-            if normalizedIntent == "unknown", action.intent != "unknown" {
+            let profileSlots = mergedProfileSlots(aiSlots: action.slots, userInput: userInput)
+            var effectiveIntent: String
+            var effectiveSlots: [String: String]
+            if normalizedIntent == "update_profile" {
+                effectiveIntent = "update_profile"
+                effectiveSlots = profileSlots ?? action.slots
+            } else if normalizedIntent == "unknown", let profileSlots {
+                effectiveIntent = "update_profile"
+                effectiveSlots = profileSlots
+            } else {
+                effectiveIntent = normalizedIntent
+                effectiveSlots = action.slots
+            }
+
+            if shouldConvertToAppointment(intent: effectiveIntent, slots: effectiveSlots, userInput: userInput) {
+                effectiveIntent = "create_appointment"
+                effectiveSlots = mergedAppointmentSlots(aiSlots: effectiveSlots, userInput: userInput)
+            }
+
+            if effectiveIntent == "unknown", normalizedIntent == "unknown", action.intent != "unknown" {
                 chatMessages.append(
                     HomeChatMessage(
                         role: .assistant,
@@ -871,7 +984,7 @@ struct ChatHomeView: View {
                         text: "这个操作我现在还不支持，我先帮你走现有流程：例如“晚饭后吃钙片”或“明天吃什么药”。"
                     )
                 )
-            } else if action.needClarify {
+            } else if action.needClarify && effectiveIntent != "update_profile" {
                 chatMessages.append(
                     HomeChatMessage(
                         role: .assistant,
@@ -879,16 +992,26 @@ struct ChatHomeView: View {
                         text: action.clarifyQuestion.isEmpty ? "我还需要一点信息～" : action.clarifyQuestion
                     )
                 )
-            } else if normalizedIntent == "query_schedule" {
+            } else if effectiveIntent == "query_schedule" {
                 chatMessages.append(HomeChatMessage(role: .assistant, kind: .text, text: scheduleReply(for: action, userInput: userInput)))
-            } else if normalizedIntent == "unknown" {
-                let reply = action.assistantReply.isEmpty ? "我在呢～" : action.assistantReply
-                chatMessages.append(HomeChatMessage(role: .assistant, kind: .text, text: reply))
+            } else if effectiveIntent == "unknown" {
+                if looksLikeProfileMetricRequest(userInput) {
+                    chatMessages.append(
+                        HomeChatMessage(
+                            role: .assistant,
+                            kind: .text,
+                            text: "要记录身高体重，请带上数值，例如“身高165厘米，体重52.3公斤”，也可以只说“记录体重53公斤”。"
+                        )
+                    )
+                } else {
+                    let reply = action.assistantReply.isEmpty ? "我在呢～" : action.assistantReply
+                    chatMessages.append(HomeChatMessage(role: .assistant, kind: .text, text: reply))
+                }
             } else {
                 let pending = AIPendingAction(
                     id: UUID().uuidString,
-                    intent: normalizedIntent,
-                    slots: action.slots,
+                    intent: effectiveIntent,
+                    slots: effectiveSlots,
                     createdAt: Date()
                 )
                 pendingAction = pending
@@ -929,6 +1052,17 @@ struct ChatHomeView: View {
         store.saveHomeChatMessages(chatMessages)
     }
 
+    private var conversationBottomPadding: CGFloat {
+        max(AppLayout.scrollTailPadding, composerDockHeight + 12)
+    }
+
+    private func scrollToBottomStable(_ proxy: ScrollViewProxy) {
+        scrollToBottom(proxy)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
+            scrollToBottom(proxy)
+        }
+    }
+
     private func scrollToBottom(_ proxy: ScrollViewProxy) {
         if reduceMotion {
             proxy.scrollTo(bottomAnchor, anchor: .bottom)
@@ -963,12 +1097,34 @@ struct ChatHomeView: View {
             let time = displayTime(for: pendingAction)
             return "创建用药：\(name)\(time.isEmpty ? "" : " · \(time)")"
         case "create_check_record":
-            let type = pendingAction.slots["check_type"] ?? "检查"
-            return "保存检查记录：\(type)"
+            let type = pendingAction.slots["check_type"] ?? "检查报告"
+            return "保存检查报告：\(type)"
+        case "create_appointment":
+            let title = pendingAction.slots["item_name"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let dateText = pendingAction.slots["check_date"]?.trimmingCharacters(in: .whitespacesAndNewlines)
+                ?? pendingAction.slots["date_semantic"]?.trimmingCharacters(in: .whitespacesAndNewlines)
+                ?? ""
+            let timeText = pendingAction.slots["time_exact"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let displayTitle = title.isEmpty ? "复诊预约" : title
+            let displayDate = dateText.isEmpty ? "待定日期" : dateText
+            let displayTime = timeText.isEmpty ? "09:00" : timeText
+            return "创建预约：\(displayTitle) · \(displayDate) \(displayTime)"
         case "create_reminder":
             let title = pendingAction.slots["item_name"] ?? "提醒"
             let time = displayTime(for: pendingAction)
             return "创建提醒：\(title)\(time.isEmpty ? "" : " · \(time)")"
+        case "update_profile":
+            var parts: [String] = []
+            if let height = pendingAction.slots["height_cm"]?.trimmingCharacters(in: .whitespacesAndNewlines), !height.isEmpty {
+                parts.append("身高 \(height) cm")
+            }
+            if let weight = pendingAction.slots["weight_kg"]?.trimmingCharacters(in: .whitespacesAndNewlines), !weight.isEmpty {
+                parts.append("体重 \(weight) kg")
+            }
+            if parts.isEmpty {
+                return "更新个人信息：请确认"
+            }
+            return "记录个人信息：\(parts.joined(separator: " · "))"
         case "update_reminder_time":
             let time = displayTime(for: pendingAction)
             return "更新提醒配置：\(time.isEmpty ? "请确认" : time)"
@@ -1060,19 +1216,25 @@ struct ChatHomeView: View {
         let semantic = override ?? (semanticFromAI.isEmpty ? userInput : semanticFromAI)
         let (date, label) = dateFromSemantic(semantic)
         let sections = store.medicationSections(for: date)
+        let injectionDue = store.isInjectionDue(on: date)
 
-        if sections.isEmpty {
+        if sections.isEmpty && !injectionDue {
             return "\(label)没有固定用药安排。"
         }
 
-        let lines = sections.map { section in
-            let names = section.rows.map { row in
-                if row.subtitle.isEmpty {
-                    return row.title
+        var lines: [String] = sections.map { section in
+            let names = section.rows
+                .map { row in
+                    if row.subtitle.isEmpty {
+                        return row.title
+                    }
+                    return "\(row.title)（\(row.subtitle)）"
                 }
-                return "\(row.title)（\(row.subtitle)）"
-            }.joined(separator: "、")
+                .joined(separator: "、")
             return "\(section.title)：\(names)"
+        }
+        if injectionDue {
+            lines.append("打针：\(store.state.injectionPlan.title)（\(store.state.injectionPlan.detail)）")
         }
 
         return "\(label)用药清单：\n" + lines.joined(separator: "\n")
@@ -1096,6 +1258,216 @@ struct ChatHomeView: View {
         if text.contains("明天") || text.contains("明日") { return "明天" }
         if text.contains("今天") { return "今天" }
         return nil
+    }
+
+    private func looksLikeProfileMetricRequest(_ text: String) -> Bool {
+        let lowered = text.lowercased()
+        return lowered.contains("身高") ||
+        lowered.contains("体重") ||
+        lowered.contains("height") ||
+        lowered.contains("weight")
+    }
+
+    private func mergedProfileSlots(aiSlots: [String: String], userInput: String) -> [String: String]? {
+        let parsedFromUser = parseProfileSlotsFromText(userInput)
+        var merged: [String: String] = [:]
+
+        if let height = normalizeBodyMetricSlot(
+            aiSlots["height_cm"] ??
+            aiSlots["heightCM"] ??
+            aiSlots["height"] ??
+            parsedFromUser["height_cm"]
+        ) {
+            merged["height_cm"] = height
+        }
+
+        if let weight = normalizeWeightSlot(
+            aiSlots["weight_kg"] ??
+            aiSlots["weightKG"] ??
+            aiSlots["weight"] ??
+            parsedFromUser["weight_kg"]
+        ) {
+            merged["weight_kg"] = weight
+        }
+
+        if let dateText = aiSlots["check_date"]?.trimmingCharacters(in: .whitespacesAndNewlines), !dateText.isEmpty {
+            merged["check_date"] = dateText
+        }
+        return merged.isEmpty ? nil : merged
+    }
+
+    private func shouldConvertToAppointment(intent: String, slots: [String: String], userInput: String) -> Bool {
+        guard intent == "create_check_record" || intent == "create_reminder" else { return false }
+
+        let mergedText = [
+            userInput,
+            slots["item_name"] ?? "",
+            slots["check_type"] ?? "",
+            slots["note"] ?? "",
+            slots["date_semantic"] ?? "",
+            slots["check_date"] ?? ""
+        ].joined(separator: " ").lowercased()
+
+        let appointmentKeywords = ["复诊", "回诊", "产检", "门诊", "医院", "就诊", "挂号", "医生"]
+        let hasAppointmentKeyword = appointmentKeywords.contains { mergedText.contains($0) }
+        if !hasAppointmentKeyword {
+            return false
+        }
+
+        let hasStrongLabMetrics = !((slots["hcg"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) ||
+        !((slots["progesterone"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) ||
+        !((slots["estradiol"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+
+        let reportKeywords = ["妊娠三项", "hcg", "孕酮", "雌二醇", "nt", "唐筛", "报告", "b超", "超声"]
+        let hasReportKeyword = reportKeywords.contains { mergedText.contains($0) }
+        return !(hasStrongLabMetrics || hasReportKeyword)
+    }
+
+    private func mergedAppointmentSlots(aiSlots: [String: String], userInput: String) -> [String: String] {
+        var merged = aiSlots
+        let rawTitle = firstNonEmptyString(
+            aiSlots["item_name"],
+            aiSlots["appointment_title"],
+            aiSlots["title"],
+            aiSlots["check_type"]
+        ) ?? ""
+        let normalizedTitle = normalizeAppointmentTitle(rawTitle, userInput: userInput)
+        merged["item_name"] = normalizedTitle
+
+        if (merged["check_date"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            if let dateText = firstNonEmptyString(
+                aiSlots["check_date"],
+                aiSlots["due_date"],
+                aiSlots["appointment_date"],
+                aiSlots["date_semantic"]
+            ) {
+                merged["check_date"] = dateText
+            }
+        }
+
+        if (merged["time_exact"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            if let timeText = firstNonEmptyString(
+                aiSlots["time_exact"],
+                aiSlots["appointment_time"]
+            ) {
+                merged["time_exact"] = timeText
+            }
+        }
+
+        if (merged["note"] ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            let cleaned = userInput.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !cleaned.isEmpty {
+                merged["note"] = cleaned
+            }
+        }
+
+        return merged
+    }
+
+    private func normalizeAppointmentTitle(_ rawTitle: String, userInput: String) -> String {
+        let trimmed = rawTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty, trimmed != "提醒", trimmed != "检查", trimmed != "检查记录", trimmed != "检查报告" {
+            return trimmed
+        }
+        if userInput.contains("产检") {
+            return "产检复诊"
+        }
+        return "医院复诊"
+    }
+
+    private func parseProfileSlotsFromText(_ text: String) -> [String: String] {
+        var slots: [String: String] = [:]
+        let lowered = text.lowercased()
+
+        if let height = firstRegexCapture(in: lowered, pattern: #"(?:身高|height)\s*(?:是|为|[:：])?\s*(\d{2,3}(?:\.\d+)?)"#)
+            ?? firstRegexCapture(in: lowered, pattern: #"(\d{2,3}(?:\.\d+)?)\s*(?:cm|厘米|公分)"#) {
+            slots["height_cm"] = height
+        }
+
+        if let weightWithUnit = firstRegexCaptures(in: lowered, pattern: #"(?:体重|weight)\s*(?:是|为|[:：])?\s*(\d{2,3}(?:\.\d+)?)\s*(kg|公斤|千克|斤)?"#) {
+            if let converted = normalizedWeight(raw: weightWithUnit.value, unit: weightWithUnit.unit) {
+                slots["weight_kg"] = converted
+            }
+        } else if let fallbackWeight = firstRegexCaptures(in: lowered, pattern: #"(\d{2,3}(?:\.\d+)?)\s*(kg|公斤|千克|斤)"#) {
+            if let converted = normalizedWeight(raw: fallbackWeight.value, unit: fallbackWeight.unit) {
+                slots["weight_kg"] = converted
+            }
+        }
+
+        return slots
+    }
+
+    private func normalizeBodyMetricSlot(_ raw: String?) -> String? {
+        guard let raw else { return nil }
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        if let value = Double(trimmed) {
+            return formattedMetric(value)
+        }
+        if let capture = firstRegexCapture(in: trimmed, pattern: #"(\d+(?:\.\d+)?)"#), let value = Double(capture) {
+            return formattedMetric(value)
+        }
+        return nil
+    }
+
+    private func normalizeWeightSlot(_ raw: String?) -> String? {
+        guard let raw else { return nil }
+        let lowered = raw.lowercased()
+        if let capture = firstRegexCaptures(
+            in: lowered,
+            pattern: #"(\d+(?:\.\d+)?)\s*(kg|公斤|千克|斤)?"#
+        ) {
+            return normalizedWeight(raw: capture.value, unit: capture.unit)
+        }
+        return normalizeBodyMetricSlot(raw)
+    }
+
+    private func normalizedWeight(raw: String, unit: String?) -> String? {
+        guard let value = Double(raw) else { return nil }
+        let normalizedValue: Double
+        if let unit, unit == "斤" {
+            normalizedValue = value / 2.0
+        } else {
+            normalizedValue = value
+        }
+        return formattedMetric(normalizedValue)
+    }
+
+    private func formattedMetric(_ value: Double) -> String {
+        let formatter = NumberFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.numberStyle = .decimal
+        formatter.minimumFractionDigits = 0
+        formatter.maximumFractionDigits = 1
+        return formatter.string(from: NSNumber(value: value)) ?? String(format: "%.1f", value)
+    }
+
+    private func firstRegexCapture(in text: String, pattern: String) -> String? {
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else { return nil }
+        let range = NSRange(text.startIndex..<text.endIndex, in: text)
+        guard let match = regex.firstMatch(in: text, options: [], range: range),
+              match.numberOfRanges > 1,
+              let swiftRange = Range(match.range(at: 1), in: text) else {
+            return nil
+        }
+        return String(text[swiftRange])
+    }
+
+    private func firstRegexCaptures(in text: String, pattern: String) -> (value: String, unit: String?)? {
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else { return nil }
+        let range = NSRange(text.startIndex..<text.endIndex, in: text)
+        guard let match = regex.firstMatch(in: text, options: [], range: range),
+              match.numberOfRanges > 1,
+              let valueRange = Range(match.range(at: 1), in: text) else {
+            return nil
+        }
+
+        var unit: String?
+        if match.numberOfRanges > 2,
+           let unitRange = Range(match.range(at: 2), in: text) {
+            unit = String(text[unitRange])
+        }
+        return (String(text[valueRange]), unit)
     }
 }
 
@@ -1328,7 +1700,7 @@ struct QuickCardsBar: View {
                 NavigationLink {
                     CheckListView()
                 } label: {
-                    QuickActionChip(icon: "list.bullet.clipboard", title: "检查记录")
+                    QuickActionChip(icon: "list.bullet.clipboard", title: "检查报告")
                 }
             }
             .padding(.horizontal)

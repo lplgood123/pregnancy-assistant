@@ -78,22 +78,27 @@ struct MedicationListView: View {
             }
             .navigationBarTitleDisplayMode(.inline)
             .safeAreaInset(edge: .bottom) {
-                NavigationLink {
-                    RecordAddView(initialTab: .medication)
-                        .environmentObject(store)
-                } label: {
-                    Text("+ 新增用药 / 补剂")
-                        .font(.subheadline.weight(.semibold))
-                        .frame(maxWidth: .infinity)
-                        .frame(minHeight: 44)
-                        .background(AppTheme.actionPrimary)
-                        .foregroundStyle(.white)
-                        .clipShape(RoundedRectangle(cornerRadius: 12))
-                        .padding(.horizontal)
-                        .padding(.top, 8)
-                        .padding(.bottom, AppLayout.dockBottomInsetAboveTabBar)
-                        .background(AppTheme.background)
+                VStack(spacing: 0) {
+                    NavigationLink {
+                        RecordAddView(initialTab: .medication)
+                            .environmentObject(store)
+                    } label: {
+                        Text("+ 新增用药 / 补剂")
+                            .font(.subheadline.weight(.semibold))
+                            .frame(maxWidth: .infinity)
+                            .frame(minHeight: 44)
+                            .background(AppTheme.actionPrimary)
+                            .foregroundStyle(.white)
+                            .clipShape(RoundedRectangle(cornerRadius: 12))
+                            .padding(.horizontal)
+                            .padding(.top, 8)
+                    }
+
+                    Color.clear
+                        .frame(height: AppLayout.dockBottomInsetAboveTabBar)
+                        .allowsHitTesting(false)
                 }
+                .background(AppTheme.background.allowsHitTesting(false))
             }
             .font(AppTheme.bodyFont)
         }
@@ -141,8 +146,8 @@ struct MedicationListView: View {
                         .font(.caption2.weight(.semibold))
                         .padding(.horizontal, 8)
                         .padding(.vertical, 2)
-                        .background(done ? Color(hex: "EDF7F1") : AppTheme.surfaceMuted)
-                        .foregroundStyle(done ? Color(hex: "6BAB8A") : AppTheme.textSecondary)
+                        .background(done ? AppTheme.statusSuccessSoft : AppTheme.surfaceMuted)
+                        .foregroundStyle(done ? AppTheme.statusSuccess : AppTheme.textSecondary)
                         .clipShape(Capsule())
                     Text(group.detailText)
                         .font(.caption)
@@ -161,8 +166,8 @@ struct MedicationListView: View {
                     toggleGroupDone(group)
                 } label: {
                     Circle()
-                        .stroke(done ? Color(hex: "6BAB8A") : AppTheme.border, lineWidth: 2)
-                        .background(done ? Color(hex: "6BAB8A") : Color.clear)
+                        .stroke(done ? AppTheme.statusSuccess : AppTheme.border, lineWidth: 2)
+                        .background(done ? AppTheme.statusSuccess : Color.clear)
                         .clipShape(Circle())
                         .frame(width: 24, height: 24)
                         .overlay(

@@ -17,6 +17,13 @@ Stateless backend proxy for the iOS app.
 - `POST /api/ai/chat`
 - `POST /api/ai/home-summary`
 
+## China-friendly deployment (Tencent Cloud)
+
+If Render is unstable on your network, use Tencent Cloud Lighthouse.
+
+- Step-by-step guide: [/Users/lpl/Desktop/孕期助手/docs/腾讯云轻量部署-小白步骤.md](/Users/lpl/Desktop/孕期助手/docs/腾讯云轻量部署-小白步骤.md)
+- Deployment files: `/Users/lpl/Desktop/孕期助手/ai_backend/deploy/tencent`
+
 ## One-time cloud deploy (Render)
 
 1. Push this repository to GitHub.

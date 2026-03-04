@@ -7,7 +7,9 @@ enum AIConfigProvider {
         var model: String?
     }
 
-    static let defaultModel = "minimax"
+    static let bundledDefaultBaseURL = "https://pregnancy-ai-backend.onrender.com"
+    static let bundledDefaultBackendToken = "ac0d99c5f21eb1e95a5c28bdcef0e0caf458b9c2b5a49da2cca82a0c5d0d3ac5"
+    static let fallbackModel = "gemini-2.5-flash"
 
     static func environmentOverrides() -> EnvironmentOverrides {
         let env = ProcessInfo.processInfo.environment
@@ -36,10 +38,13 @@ enum AIConfigProvider {
     }
 
     static func defaultConfig() -> AIConfig {
-        AIConfig(
-            baseURL: appLevelDefaultValue(for: "AI_BACKEND_URL"),
-            apiKey: appLevelDefaultValue(for: "AI_BACKEND_TOKEN"),
-            model: defaultModel
+        let baseURL = appLevelDefaultValue(for: "AI_BACKEND_URL")
+        let apiKey = appLevelDefaultValue(for: "AI_BACKEND_TOKEN")
+        let model = appLevelDefaultValue(for: "AI_BACKEND_MODEL")
+        return AIConfig(
+            baseURL: baseURL.isEmpty ? bundledDefaultBaseURL : baseURL,
+            apiKey: apiKey.isEmpty ? bundledDefaultBackendToken : apiKey,
+            model: model.isEmpty ? fallbackModel : model
         )
     }
 

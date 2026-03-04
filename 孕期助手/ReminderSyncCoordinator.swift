@@ -2,9 +2,9 @@ import Foundation
 import UserNotifications
 
 enum ReminderSyncOutcome {
-    case success
-    case permissionDenied
-    case failed(String)
+    case localSuccess(system: SystemReminderSyncStatus)
+    case localPermissionDenied
+    case localFailed(String)
 }
 
 enum ReminderSyncCoordinator {
@@ -14,13 +14,14 @@ enum ReminderSyncCoordinator {
         do {
             let granted = try await ensureAuthorization(center: center)
             guard granted else {
-                return .permissionDenied
+                return .localPermissionDenied
             }
 
             try await ReminderScheduler.scheduleAll(using: store)
-            return .success
+            let systemStatus = await SystemReminderSyncService.sync(using: store)
+            return .localSuccess(system: systemStatus)
         } catch {
-            return .failed(error.localizedDescription)
+            return .localFailed(error.localizedDescription)
         }
     }
 

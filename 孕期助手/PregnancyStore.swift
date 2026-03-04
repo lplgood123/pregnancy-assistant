@@ -119,6 +119,80 @@ struct InjectionPlan: Codable {
     var endDate: Date
     var intervalDays: Int
     var detail: String
+    var period: TimePeriod
+
+    init(
+        title: String,
+        startDate: Date,
+        endDate: Date,
+        intervalDays: Int,
+        detail: String,
+        period: TimePeriod = .afterDinner
+    ) {
+        self.title = title
+        self.startDate = startDate
+        self.endDate = endDate
+        self.intervalDays = intervalDays
+        self.detail = detail
+        self.period = period
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case title
+        case startDate
+        case endDate
+        case intervalDays
+        case detail
+        case period
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        title = try container.decode(String.self, forKey: .title)
+        startDate = try container.decode(Date.self, forKey: .startDate)
+        endDate = try container.decode(Date.self, forKey: .endDate)
+        intervalDays = try container.decodeIfPresent(Int.self, forKey: .intervalDays) ?? 1
+        detail = try container.decodeIfPresent(String.self, forKey: .detail) ?? ""
+        if let decodedPeriod = try container.decodeIfPresent(TimePeriod.self, forKey: .period) {
+            period = decodedPeriod
+        } else {
+            period = Self.inferPeriod(from: detail) ?? .afterDinner
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(title, forKey: .title)
+        try container.encode(startDate, forKey: .startDate)
+        try container.encode(endDate, forKey: .endDate)
+        try container.encode(intervalDays, forKey: .intervalDays)
+        try container.encode(detail, forKey: .detail)
+        try container.encode(period, forKey: .period)
+    }
+
+    private static func inferPeriod(from detail: String) -> TimePeriod? {
+        let trimmed = detail.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
+        if let explicit = explicitTimeLabel(from: trimmed) {
+            return TimePeriod.fromSemantic(explicit) ?? TimePeriod.allCases.first(where: { $0.rawValue == explicit })
+        }
+
+        if let matchedRawValue = TimePeriod.allCases.first(where: { trimmed.contains($0.rawValue) }) {
+            return matchedRawValue
+        }
+
+        return TimePeriod.fromSemantic(trimmed)
+    }
+
+    private static func explicitTimeLabel(from detail: String) -> String? {
+        guard let markerRange = detail.range(of: "时间：") else { return nil }
+        let tail = detail[markerRange.upperBound...]
+        let separators = CharacterSet(charactersIn: "；;\n")
+        let raw = String(tail).components(separatedBy: separators).first ?? String(tail)
+        let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        return value.isEmpty ? nil : value
+    }
 }
 
 struct LabRecord: Identifiable, Codable {
@@ -359,6 +433,7 @@ struct AppState: Codable {
     var aiLongTermMemory: String?
     var aiPendingActions: [AIPendingAction]?
     var homeChatMessages: [HomeChatMessage]?
+    var lastHomeGreetingBusinessDateKey: String?
     var onboardingVersion: Int
     var onboardingCompleted: Bool
     var onboardingStep: Int
@@ -387,6 +462,7 @@ struct AppState: Codable {
         aiLongTermMemory: String?,
         aiPendingActions: [AIPendingAction]?,
         homeChatMessages: [HomeChatMessage]?,
+        lastHomeGreetingBusinessDateKey: String?,
         onboardingVersion: Int,
         onboardingCompleted: Bool,
         onboardingStep: Int,
@@ -414,6 +490,7 @@ struct AppState: Codable {
         self.aiLongTermMemory = aiLongTermMemory
         self.aiPendingActions = aiPendingActions
         self.homeChatMessages = homeChatMessages
+        self.lastHomeGreetingBusinessDateKey = lastHomeGreetingBusinessDateKey
         self.onboardingVersion = onboardingVersion
         self.onboardingCompleted = onboardingCompleted
         self.onboardingStep = onboardingStep
@@ -443,6 +520,7 @@ struct AppState: Codable {
         case aiLongTermMemory
         case aiPendingActions
         case homeChatMessages
+        case lastHomeGreetingBusinessDateKey
         case onboardingVersion
         case onboardingCompleted
         case onboardingStep
@@ -473,6 +551,7 @@ struct AppState: Codable {
         aiLongTermMemory = try container.decodeIfPresent(String.self, forKey: .aiLongTermMemory)
         aiPendingActions = try container.decodeIfPresent([AIPendingAction].self, forKey: .aiPendingActions)
         homeChatMessages = try container.decodeIfPresent([HomeChatMessage].self, forKey: .homeChatMessages)
+        lastHomeGreetingBusinessDateKey = try container.decodeIfPresent(String.self, forKey: .lastHomeGreetingBusinessDateKey)
         onboardingVersion = try container.decodeIfPresent(Int.self, forKey: .onboardingVersion) ?? 0
         onboardingCompleted = try container.decodeIfPresent(Bool.self, forKey: .onboardingCompleted) ?? false
         onboardingStep = try container.decodeIfPresent(Int.self, forKey: .onboardingStep) ?? 1
@@ -597,7 +676,7 @@ struct TimelineItem: Identifiable {
             switch self {
             case .medication: return "用药"
             case .habit: return "习惯"
-            case .check: return "检查"
+            case .check: return "检查报告"
             case .appointment: return "预约"
             }
         }
@@ -650,6 +729,23 @@ struct GlobalBanner: Identifiable {
     var level: GlobalBannerLevel
 }
 
+enum ResetMode {
+    case appOnly
+    case includeSystemReminders
+}
+
+enum ResetResult {
+    case appOnly
+    case appAndSystemCleared
+    case appClearedSystemPermissionDenied
+    case appClearedSystemFailed(String)
+}
+
+private struct WeightSnapshot {
+    var value: Double
+    var checkTime: Date
+}
+
 final class PregnancyStore: ObservableObject {
     @Published var state: AppState {
         didSet {
@@ -657,6 +753,7 @@ final class PregnancyStore: ObservableObject {
         }
     }
     @Published private(set) var reminderSyncRevision = 0
+    @Published private(set) var resetEpoch = 0
     @Published var globalBanner: GlobalBanner?
 
     private let calendar = Calendar.current
@@ -741,6 +838,9 @@ final class PregnancyStore: ObservableObject {
         state.profile = profile
         state.reminderConfig = reminder
         state.profileOptionalFieldsSkipped = skippedFields
+        state.homeChatMessages = []
+        state.lastHomeGreetingBusinessDateKey = nil
+        state.homeSummaryCache = nil
         state.onboardingVersion = onboardingSchemaVersion
         state.onboardingStep = 3
         state.onboardingCompleted = true
@@ -778,6 +878,79 @@ final class PregnancyStore: ObservableObject {
     func dismissGlobalBanner() {
         globalBanner = nil
         bannerNonce = nil
+    }
+
+    @MainActor
+    @discardableResult
+    func resetAllDataToFreshInstall(mode: ResetMode) async -> ResetResult {
+        bannerNonce = nil
+        globalBanner = nil
+        state = Self.seedState()
+        resetEpoch += 1
+        markReminderRulesDirty()
+
+        guard mode == .includeSystemReminders else {
+            return .appOnly
+        }
+
+        await ReminderScheduler.clearAllPendingNotifications()
+        let systemStatus = await SystemReminderSyncService.clearAppManagedReminders()
+        switch systemStatus {
+        case .success, .skippedDisabled:
+            return .appAndSystemCleared
+        case .permissionDenied:
+            return .appClearedSystemPermissionDenied
+        case .failed(let reason):
+            return .appClearedSystemFailed(reason)
+        }
+    }
+
+    func homeBusinessDateKey(now: Date = Date()) -> String {
+        let todayStart = calendar.startOfDay(for: now)
+        let boundary = calendar.date(bySettingHour: 5, minute: 0, second: 0, of: todayStart) ?? todayStart
+        let businessDay = now < boundary
+            ? (calendar.date(byAdding: .day, value: -1, to: todayStart) ?? todayStart)
+            : todayStart
+        return dateKey(for: businessDay)
+    }
+
+    func dailyGreetingText(now: Date = Date()) -> String {
+        let dateLine = homeDateText(for: now)
+        let baseInfo = "当前孕周：孕\(gestationalWeekText)，预产期 \(formatDate(dueDate))。"
+
+        let pendingItems = timelineItems(for: now)
+            .filter { !$0.isCompleted }
+            .sorted { (timeToMinutes($0.timeText) ?? 0) < (timeToMinutes($1.timeText) ?? 0) }
+            .prefix(4)
+            .map { item in
+                "\(item.timeText) \(item.title)"
+            }
+
+        let todoLine: String
+        if pendingItems.isEmpty {
+            todoLine = "今天自然日待办：目前没有未完成安排。"
+        } else {
+            todoLine = "今天自然日待办：\(pendingItems.joined(separator: "；"))。"
+        }
+
+        let name = state.profile.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let hello = name.isEmpty ? "早上好，今天是\(dateLine)。" : "\(name)早上好，今天是\(dateLine)。"
+        return [hello, baseInfo, todoLine].joined(separator: "\n")
+    }
+
+    func takeDailyGreetingIfNeeded(now: Date = Date()) -> HomeChatMessage? {
+        let businessKey = homeBusinessDateKey(now: now)
+        if state.lastHomeGreetingBusinessDateKey == businessKey {
+            return nil
+        }
+
+        state.lastHomeGreetingBusinessDateKey = businessKey
+        return HomeChatMessage(
+            role: .assistant,
+            kind: .text,
+            text: dailyGreetingText(now: now),
+            createdAt: now
+        )
     }
 
     func addAppointment(title: String, dueDate: Date, detail: String) {
@@ -911,6 +1084,21 @@ final class PregnancyStore: ObservableObject {
         normalized.isArchived = false
         list.append(normalized)
         state.checkRecords = list
+    }
+
+    func latestWeightComparisonInfo() -> (latestText: String, deltaText: String?)? {
+        let snapshots = weightSnapshots()
+        guard let latest = snapshots.first else { return nil }
+        let latestValue = formattedBodyMetric(latest.value, maxFractionDigits: 1)
+        let latestText = "最新（\(formatDate(latest.checkTime))）：\(latestValue) kg"
+
+        guard snapshots.count > 1, let previous = snapshots.dropFirst().first else {
+            return (latestText: latestText, deltaText: "这是第一条体重记录")
+        }
+        let delta = latest.value - previous.value
+        let deltaSign = delta >= 0 ? "+" : "-"
+        let deltaText = "较上次（\(formatDate(previous.checkTime))）：\(deltaSign)\(formattedBodyMetric(abs(delta), maxFractionDigits: 1)) kg"
+        return (latestText: latestText, deltaText: deltaText)
     }
 
     func previousCheckRecord(for record: CheckRecord) -> CheckRecord? {
@@ -1122,6 +1310,24 @@ final class PregnancyStore: ObservableObject {
             let previewNames = meds.prefix(5).map(\.name).joined(separator: "、")
             let suffix = meds.count > 5 ? " 等" : ""
             return "已创建用药 \(meds.count) 项：\(previewNames)\(suffix)"
+        case "create_appointment":
+            let titleRaw = firstNonEmptyText(
+                action.slots["item_name"],
+                action.slots["appointment_title"],
+                action.slots["title"],
+                action.slots["check_type"]
+            ) ?? ""
+            let title = titleRaw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? "医院复诊"
+                : titleRaw.trimmingCharacters(in: .whitespacesAndNewlines)
+            let dueDate = appointmentDueDate(from: action.slots)
+            let detail = action.slots["note"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            addAppointment(
+                title: title,
+                dueDate: dueDate,
+                detail: detail.isEmpty ? "复诊安排" : detail
+            )
+            return "已创建预约：\(title)（\(formatDate(dueDate)) \(appointmentTimeText(dueDate))）"
         case "create_check_record":
             let rawCheckType = action.slots["check_type"] ?? ""
             let typeInput = rawCheckType.isEmpty ? "妊娠三项" : rawCheckType
@@ -1132,7 +1338,7 @@ final class PregnancyStore: ObservableObject {
                 guard let hcg = Double(action.slots["hcg"] ?? ""),
                       let p = Double(action.slots["progesterone"] ?? ""),
                       let e2 = Double(action.slots["estradiol"] ?? "") else {
-                    return "检查数值不完整"
+                    return "检查报告数值不完整"
                 }
                 let metrics = [
                     CheckMetric(key: "hcg", label: "HCG", valueText: formatValue(hcg), unit: "mIU/ml", referenceLowText: nil, referenceHighText: nil),
@@ -1149,7 +1355,7 @@ final class PregnancyStore: ObservableObject {
                         source: .ai
                     )
                 )
-                return "已保存检查记录：HCG \(formatValue(hcg)) / P \(formatValue(p)) / E2 \(formatValue(e2))"
+                return "已保存检查报告：HCG \(formatValue(hcg)) / P \(formatValue(p)) / E2 \(formatValue(e2))"
             }
 
             var mergedNote = note.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1186,11 +1392,46 @@ final class PregnancyStore: ObservableObject {
                     source: .ai
                 )
             )
-            return "已保存\(type.title)记录"
+            return "已保存\(type.title)报告"
         case "create_reminder":
-            let title = action.slots["item_name"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "提醒"
-            let note = action.slots["note"] ?? ""
+            let rawTitle = action.slots["item_name"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let title = rawTitle.isEmpty ? "提醒" : rawTitle
+            let note = action.slots["note"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let frequency = action.slots["frequency"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             let period = TimePeriod.fromSemantic(action.slots["time_semantic"] ?? "") ?? .afterDinner
+
+            if isInjectionReminder(title: title, note: note, frequency: frequency) {
+                let intervalDays = parseReminderIntervalDays(
+                    from: [
+                        frequency,
+                        action.slots["date_semantic"] ?? "",
+                        note
+                    ]
+                ) ?? 2
+                let startDate = reminderStartDate(from: action.slots)
+                let startDay = calendar.startOfDay(for: startDate)
+                let endDay = max(calendar.startOfDay(for: dueDate), startDay)
+                let planTitle = normalizedInjectionTitle(from: title, note: note)
+                var detailParts: [String] = []
+                if !note.isEmpty {
+                    detailParts.append(note)
+                }
+                detailParts.append("频率：每\(intervalDays)天一次")
+                detailParts.append("时间：\(period.rawValue)")
+                detailParts.append("开始：\(formatDate(startDay))")
+
+                state.injectionPlan = InjectionPlan(
+                    title: planTitle,
+                    startDate: startDay,
+                    endDate: endDay,
+                    intervalDays: max(intervalDays, 1),
+                    detail: detailParts.joined(separator: "；"),
+                    period: period
+                )
+                markReminderRulesDirty()
+                return "已更新打针计划：\(planTitle)（每\(intervalDays)天一次，\(period.rawValue)）"
+            }
+
             addExtraDailyReminder(
                 title: title,
                 detail: note.isEmpty ? "提醒事项" : note,
@@ -1198,6 +1439,44 @@ final class PregnancyStore: ObservableObject {
             )
             let detail = note.isEmpty ? "" : " · \(note)"
             return "已创建提醒：\(title)\(detail)"
+        case "update_profile":
+            let parsed = parseProfileMetrics(from: action.slots)
+            guard parsed.heightCM != nil || parsed.weightKG != nil else {
+                return "没识别到可记录的身高或体重，请说“身高165厘米、体重52.3公斤”。"
+            }
+
+            var profile = state.profile
+            var updatedFields: [String] = []
+
+            if let height = parsed.heightCM {
+                let heightText = formattedBodyMetric(height, maxFractionDigits: 1)
+                profile.heightCM = heightText
+                updatedFields.append("身高 \(heightText) cm")
+            }
+
+            var weightAnalysis = ""
+            if let weight = parsed.weightKG {
+                let checkDate = parseFlexibleDate(action.slots["check_date"])
+                let previousWeight = latestWeightSnapshot()
+                let weightText = formattedBodyMetric(weight, maxFractionDigits: 1)
+                profile.weightKG = weightText
+
+                if calendar.isDateInToday(checkDate) {
+                    ensureDailyCheckinForToday()
+                    state.dailyCheckin?.weightKG = weightText
+                }
+
+                upsertWeightCheckRecord(weight: weight, checkTime: checkDate)
+                updatedFields.append("体重 \(weightText) kg")
+                weightAnalysis = weightAssessmentText(newWeight: weight, previous: previousWeight, on: checkDate)
+            }
+
+            state.profile = profile
+            var reply = "已记录：\(updatedFields.joined(separator: "，"))。"
+            if !weightAnalysis.isEmpty {
+                reply += "\n\(weightAnalysis)"
+            }
+            return reply
         case "update_reminder_time":
             let semantic = action.slots["time_semantic"] ?? ""
             let minutesText = action.slots["minutes_before"] ?? ""
@@ -1318,6 +1597,194 @@ final class PregnancyStore: ObservableObject {
         return []
     }
 
+    private func isInjectionReminder(title: String, note: String, frequency: String) -> Bool {
+        let text = [title, note, frequency]
+            .joined(separator: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        guard !text.isEmpty else { return false }
+
+        let keywords = [
+            "打针", "注射", "针剂", "肝素", "肌注", "皮下"
+        ]
+        return keywords.contains { text.contains($0) }
+    }
+
+    private func normalizedInjectionTitle(from title: String, note: String) -> String {
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty, trimmed != "提醒" {
+            return trimmed
+        }
+        if note.contains("肝素") {
+            return "肝素注射"
+        }
+        let existing = state.injectionPlan.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        return existing.isEmpty ? "打针提醒" : existing
+    }
+
+    private func parseReminderIntervalDays(from texts: [String]) -> Int? {
+        let text = texts
+            .joined(separator: " ")
+            .replacingOccurrences(of: " ", with: "")
+            .lowercased()
+        guard !text.isEmpty else { return nil }
+
+        if ["隔一天", "隔天", "隔日", "每隔一天", "每两天", "每2天", "隔1天", "qod"].contains(where: text.contains) {
+            return 2
+        }
+        if ["每天", "每日", "一天一次", "每1天", "qd"].contains(where: text.contains) {
+            return 1
+        }
+        if text.contains("每周") {
+            return 7
+        }
+        if let dayValue = firstIntCapture(in: text, pattern: #"每(\d+)天"#) {
+            return max(dayValue, 1)
+        }
+        return nil
+    }
+
+    private func reminderStartDate(from slots: [String: String]) -> Date {
+        let candidates = [
+            slots["start_date"],
+            slots["startDate"],
+            slots["date_semantic"],
+            slots["check_date"],
+            slots["note"]
+        ]
+        for candidate in candidates {
+            guard let candidate else { continue }
+            if let parsed = parseReminderDate(candidate) {
+                return calendar.startOfDay(for: parsed)
+            }
+        }
+        return calendar.startOfDay(for: Date())
+    }
+
+    private func appointmentDueDate(from slots: [String: String]) -> Date {
+        let baseDate = firstNonEmptyText(
+            slots["check_date"],
+            slots["due_date"],
+            slots["appointment_date"],
+            slots["date_semantic"],
+            slots["note"]
+        ).flatMap { parseReminderDate($0) } ?? Date()
+
+        let timeText = firstNonEmptyText(
+            slots["time_exact"],
+            slots["appointment_time"]
+        ) ?? ""
+        let normalizedTime = normalizeTimeText(timeText) ?? "09:00"
+        let timeParts = normalizedTime.split(separator: ":")
+        let hour = timeParts.count == 2 ? (Int(timeParts[0]) ?? 9) : 9
+        let minute = timeParts.count == 2 ? (Int(timeParts[1]) ?? 0) : 0
+
+        var components = calendar.dateComponents([.year, .month, .day], from: baseDate)
+        components.hour = hour
+        components.minute = minute
+        components.second = 0
+        return calendar.date(from: components) ?? baseDate
+    }
+
+    private func parseReminderDate(_ text: String) -> Date? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
+        if trimmed.contains("后天") {
+            return calendar.date(byAdding: .day, value: 2, to: Date())
+        }
+        if trimmed.contains("明天") || trimmed.contains("明日") {
+            return calendar.date(byAdding: .day, value: 1, to: Date())
+        }
+        if trimmed.contains("今天") || trimmed.contains("今日") {
+            return Date()
+        }
+
+        if let weekdayDate = parseWeekdayDate(from: trimmed) {
+            return weekdayDate
+        }
+
+        let pattern = #"(?:(\d{4})\s*[年/\-\.])?\s*(\d{1,2})\s*[月/\-\.]\s*(\d{1,2})\s*日?"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
+        let range = NSRange(trimmed.startIndex..<trimmed.endIndex, in: trimmed)
+        guard let match = regex.firstMatch(in: trimmed, options: [], range: range) else { return nil }
+
+        let year = intCapture(match: match, group: 1, source: trimmed) ?? calendar.component(.year, from: Date())
+        guard
+            let month = intCapture(match: match, group: 2, source: trimmed),
+            let day = intCapture(match: match, group: 3, source: trimmed)
+        else {
+            return nil
+        }
+        var components = DateComponents()
+        components.year = year
+        components.month = month
+        components.day = day
+        return calendar.date(from: components)
+    }
+
+    private func parseWeekdayDate(from text: String) -> Date? {
+        guard let regex = try? NSRegularExpression(pattern: #"(下周|本周)?\s*(周|星期|礼拜)\s*([一二三四五六日天])"#) else {
+            return nil
+        }
+        let range = NSRange(text.startIndex..<text.endIndex, in: text)
+        guard let match = regex.firstMatch(in: text, options: [], range: range) else {
+            return nil
+        }
+
+        var isNextWeek = false
+        if let prefixRange = Range(match.range(at: 1), in: text) {
+            let prefix = String(text[prefixRange])
+            isNextWeek = prefix.contains("下周")
+        }
+
+        guard let weekdayTextRange = Range(match.range(at: 3), in: text) else {
+            return nil
+        }
+        let weekdayText = String(text[weekdayTextRange])
+        let targetWeekday: Int
+        switch weekdayText {
+        case "日", "天":
+            targetWeekday = 1
+        case "一":
+            targetWeekday = 2
+        case "二":
+            targetWeekday = 3
+        case "三":
+            targetWeekday = 4
+        case "四":
+            targetWeekday = 5
+        case "五":
+            targetWeekday = 6
+        case "六":
+            targetWeekday = 7
+        default:
+            return nil
+        }
+
+        let today = calendar.startOfDay(for: Date())
+        let currentWeekday = calendar.component(.weekday, from: today)
+        var diff = (targetWeekday - currentWeekday + 7) % 7
+        if isNextWeek {
+            diff += 7
+        }
+        return calendar.date(byAdding: .day, value: diff, to: today)
+    }
+
+    private func firstIntCapture(in source: String, pattern: String) -> Int? {
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
+        let range = NSRange(source.startIndex..<source.endIndex, in: source)
+        guard let match = regex.firstMatch(in: source, options: [], range: range) else { return nil }
+        return intCapture(match: match, group: 1, source: source)
+    }
+
+    private func intCapture(match: NSTextCheckingResult, group: Int, source: String) -> Int? {
+        guard group < match.numberOfRanges else { return nil }
+        let range = match.range(at: group)
+        guard range.location != NSNotFound, let swiftRange = Range(range, in: source) else { return nil }
+        return Int(source[swiftRange])
+    }
+
     private func parseMedicationPayload(
         from item: [String: Any],
         defaultSemantic: String,
@@ -1373,6 +1840,155 @@ final class PregnancyStore: ObservableObject {
             }
         }
         return nil
+    }
+
+    private func parseProfileMetrics(from slots: [String: String]) -> (heightCM: Double?, weightKG: Double?) {
+        let heightRaw = firstNonEmptyText(
+            slots["height_cm"],
+            slots["heightCM"],
+            slots["height"],
+            slots["stature"]
+        )
+        let weightRaw = firstNonEmptyText(
+            slots["weight_kg"],
+            slots["weightKG"],
+            slots["weight"],
+            slots["body_weight"]
+        )
+        return (
+            heightCM: parseBodyMetric(heightRaw),
+            weightKG: parseWeightMetric(weightRaw)
+        )
+    }
+
+    private func parseBodyMetric(_ raw: String?) -> Double? {
+        guard let raw else { return nil }
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        if let direct = Double(trimmed) {
+            return direct
+        }
+        guard let regex = try? NSRegularExpression(pattern: #"(\d+(?:\.\d+)?)"#) else { return nil }
+        let range = NSRange(trimmed.startIndex..<trimmed.endIndex, in: trimmed)
+        guard let match = regex.firstMatch(in: trimmed, options: [], range: range),
+              let swiftRange = Range(match.range(at: 1), in: trimmed) else {
+            return nil
+        }
+        return Double(trimmed[swiftRange])
+    }
+
+    private func parseWeightMetric(_ raw: String?) -> Double? {
+        guard let raw else { return nil }
+        guard let value = parseBodyMetric(raw) else { return nil }
+        let normalizedRaw = raw.lowercased()
+        if normalizedRaw.contains("斤") {
+            return value / 2.0
+        }
+        return value
+    }
+
+    private func formattedBodyMetric(_ value: Double, maxFractionDigits: Int) -> String {
+        let formatter = NumberFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.numberStyle = .decimal
+        formatter.minimumFractionDigits = 0
+        formatter.maximumFractionDigits = maxFractionDigits
+        return formatter.string(from: NSNumber(value: value)) ?? String(format: "%.\(maxFractionDigits)f", value)
+    }
+
+    private func weightSnapshots() -> [WeightSnapshot] {
+        sortedCheckRecords().compactMap { record in
+            guard let weightValue = weightValue(from: record) else { return nil }
+            return WeightSnapshot(value: weightValue, checkTime: record.checkTime)
+        }
+    }
+
+    private func latestWeightSnapshot() -> WeightSnapshot? {
+        weightSnapshots().first
+    }
+
+    private func weightValue(from record: CheckRecord) -> Double? {
+        for metric in record.metrics {
+            if metric.key == "weight_kg" || metric.label.contains("体重") {
+                let rawValue = [metric.valueText, metric.unit]
+                    .joined(separator: "")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                if let value = parseWeightMetric(rawValue) {
+                    return value
+                }
+            }
+        }
+        return nil
+    }
+
+    private func upsertWeightCheckRecord(weight: Double, checkTime: Date) {
+        let metric = CheckMetric(
+            key: "weight_kg",
+            label: "体重",
+            valueText: formattedBodyMetric(weight, maxFractionDigits: 1),
+            unit: "kg",
+            referenceLowText: nil,
+            referenceHighText: nil
+        )
+        var list = state.checkRecords ?? []
+        if let index = list.firstIndex(where: { record in
+            record.type == .custom &&
+            record.source == .ai &&
+            calendar.isDate(record.checkTime, inSameDayAs: checkTime) &&
+            record.metrics.contains(where: { $0.key == "weight_kg" || $0.label.contains("体重") })
+        }) {
+            list[index].checkTime = checkTime
+            list[index].metrics = [metric]
+            list[index].note = "体重记录"
+            list[index].isArchived = false
+            state.checkRecords = list
+            return
+        }
+
+        addCheckRecord(
+            CheckRecord(
+                id: UUID().uuidString,
+                type: .custom,
+                checkTime: checkTime,
+                metrics: [metric],
+                note: "体重记录",
+                source: .ai
+            )
+        )
+    }
+
+    private func weightAssessmentText(newWeight: Double, previous: WeightSnapshot?, on checkDate: Date) -> String {
+        var parts: [String] = []
+        if let previous {
+            let delta = newWeight - previous.value
+            let sign = delta >= 0 ? "+" : "-"
+            parts.append("较上次\(formatDate(previous.checkTime)) \(sign)\(formattedBodyMetric(abs(delta), maxFractionDigits: 1))kg。")
+
+            let days = max(calendar.dateComponents([.day], from: previous.checkTime, to: checkDate).day ?? 0, 0)
+            if days >= 3 {
+                let weeklyRate = delta * 7.0 / Double(days)
+                if weeklyRate > 1.0 {
+                    parts.append("近期增重偏快。")
+                } else if weeklyRate < -0.6 {
+                    parts.append("近期体重下降偏明显。")
+                } else {
+                    parts.append("近期体重变化在常见范围。")
+                }
+            } else if abs(delta) <= 0.5 {
+                parts.append("近期波动不大。")
+            }
+        } else {
+            parts.append("这是第一条体重记录。")
+        }
+
+        let week = gestationalWeekText(for: checkDate)
+        if gestationalWeekNumber < 14 {
+            parts.append("当前约孕\(week)，孕早期体重小幅波动常见，通常总增重 0-2kg。")
+        } else {
+            parts.append("当前约孕\(week)，中晚孕每周增加约 0.3-0.5kg 较常见。")
+        }
+        parts.append("若一周内骤增>1kg、持续下降，或伴明显水肿/头痛，请尽快联系医生。")
+        return parts.joined(separator: "")
     }
 
     private func formatValue(_ value: Double) -> String {
@@ -1487,6 +2103,7 @@ final class PregnancyStore: ObservableObject {
         return """
         当前日期：\(todayText)，当前时间：\(nowText)
         姓名：\(profile.name)，性别：\(profile.gender)，年龄：\(age)岁
+        身高：\(profile.heightCM ?? "未记录")cm，体重：\(profile.weightKG ?? "未记录")kg
         当前孕周：\(gestationalWeekText)，\(daysToDueText)
         试管植入：\(formatDate(profile.ivfTransferDate))，首次验孕阳性：\(formatDate(profile.firstPositiveDate))
         每日目标：步数\(profile.stepsGoal)，饮水\(profile.waterGoalML)ml
@@ -1726,7 +2343,7 @@ final class PregnancyStore: ObservableObject {
             pendingGroups.append("按时吃药")
         }
         if hasCheck || isInjectionDueToday() {
-            pendingGroups.append("打针/检查")
+            pendingGroups.append("打针/检查报告")
         }
         if hasAppointment {
             pendingGroups.append("就诊安排")
@@ -2301,6 +2918,7 @@ final class PregnancyStore: ObservableObject {
         state.aiConversation = []
         state.aiPendingActions = []
         state.homeChatMessages = []
+        state.lastHomeGreetingBusinessDateKey = nil
         state.homeSummaryCache = nil
         state.completedDailyTaskIDs = []
         state.todayNotes = []
@@ -2346,8 +2964,17 @@ final class PregnancyStore: ObservableObject {
     }
 
     private func parseFlexibleDate(_ text: String?) -> Date {
-        guard let text, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return Date() }
+        parseFlexibleDateOptional(text) ?? Date()
+    }
+
+    private func parseFlexibleDateOptional(_ text: String?) -> Date? {
+        guard let text, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if let semanticDate = parseReminderDate(trimmed) {
+            return semanticDate
+        }
+
         let fmts = ["yyyy-MM-dd", "yyyy/MM/dd", "MM-dd", "M月d日"]
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "zh_CN")
@@ -2355,7 +2982,7 @@ final class PregnancyStore: ObservableObject {
             formatter.dateFormat = format
             if let d = formatter.date(from: trimmed) { return d }
         }
-        return Date()
+        return nil
     }
 
     private func saveState() {
@@ -2395,11 +3022,12 @@ final class PregnancyStore: ObservableObject {
         ]
 
         let injectionPlan = InjectionPlan(
-            title: "促绒毛激素注射",
+            title: "暂无注射计划",
             startDate: today,
-            endDate: today,
+            endDate: Calendar.current.date(byAdding: .day, value: -1, to: today) ?? today,
             intervalDays: 2,
-            detail: "如需注射计划，可在记录中新增提醒。"
+            detail: "暂无注射安排",
+            period: .afterDinner
         )
 
         let formatter2 = DateFormatter()
@@ -2445,6 +3073,7 @@ final class PregnancyStore: ObservableObject {
             aiLongTermMemory: "",
             aiPendingActions: [],
             homeChatMessages: [],
+            lastHomeGreetingBusinessDateKey: nil,
             onboardingVersion: 13,
             onboardingCompleted: false,
             onboardingStep: 1,

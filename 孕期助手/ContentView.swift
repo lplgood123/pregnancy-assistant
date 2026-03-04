@@ -245,6 +245,8 @@ struct ProfileView: View {
     @State private var relationName = ""
     @State private var relationPhone = ""
     @State private var inviteCodePlaceholder = "INVITE-准备中"
+    @State private var showResetAllDataDialog = false
+    @State private var isResettingAllData = false
 
     var body: some View {
         NavigationStack {
@@ -323,10 +325,50 @@ struct ProfileView: View {
                             }
                         }
 
+                        profileSection(title: "数据管理") {
+                            AppCard {
+                                VStack(alignment: .leading, spacing: 10) {
+                                    Text("一键清除所有记录、聊天与提醒设置，恢复到首次进入 App 的状态。")
+                                        .font(.caption)
+                                        .foregroundStyle(AppTheme.textSecondary)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+
+                                    Button(role: .destructive) {
+                                        showResetAllDataDialog = true
+                                    } label: {
+                                        Text(isResettingAllData ? "清除中..." : "清除所有数据并重置")
+                                            .font(.footnote.weight(.semibold))
+                                            .frame(maxWidth: .infinity)
+                                            .frame(minHeight: 44)
+                                            .background(AppTheme.statusErrorSoft)
+                                            .foregroundStyle(AppTheme.statusError)
+                                            .clipShape(RoundedRectangle(cornerRadius: 10))
+                                    }
+                                    .buttonStyle(.plain)
+                                    .disabled(isResettingAllData)
+                                }
+                            }
+                        }
+
                     }
                     .padding(.top, 12)
                     .padding(.bottom, AppLayout.tabPageScrollTailPadding)
                 }
+            }
+            .confirmationDialog("选择清除范围", isPresented: $showResetAllDataDialog, titleVisibility: .visible) {
+                Button("仅清空 App 内数据", role: .destructive) {
+                    Task {
+                        await performReset(mode: .appOnly)
+                    }
+                }
+                Button("清空 App 数据 + 系统提醒", role: .destructive) {
+                    Task {
+                        await performReset(mode: .includeSystemReminders)
+                    }
+                }
+                Button("取消", role: .cancel) { }
+            } message: {
+                Text("此操作不可恢复。将清除资料、用药、检查、预约、聊天记录和提醒配置。")
             }
             .navigationTitle("我的")
             .navigationBarTitleDisplayMode(.inline)
@@ -338,10 +380,7 @@ struct ProfileView: View {
                 }
             }
             .onAppear {
-                draft = store.state.profile
-                relationName = store.state.familyBindingDraft?.relationName ?? ""
-                relationPhone = store.state.familyBindingDraft?.relationPhone ?? ""
-                inviteCodePlaceholder = store.state.familyBindingDraft?.inviteCodePlaceholder ?? "INVITE-准备中"
+                reloadDraftFromStore()
             }
             .onDisappear {
                 saveDraftIfNeeded()
@@ -404,15 +443,7 @@ struct ProfileView: View {
     }
 
     private func rowDatePicker(_ title: String, selection: Binding<Date>) -> some View {
-        HStack {
-            Text(title)
-                .font(.footnote)
-                .foregroundStyle(AppTheme.textSecondary)
-                .frame(width: 88, alignment: .leading)
-            DatePicker("", selection: selection, displayedComponents: .date)
-                .labelsHidden()
-                .frame(maxWidth: .infinity, alignment: .leading)
-        }
+        AppDateField(title, selection: selection, titleWidth: 88)
     }
 
     private func binding<Value>(_ keyPath: WritableKeyPath<Profile, Value>) -> Binding<Value> {
@@ -446,6 +477,34 @@ struct ProfileView: View {
             relationPhone: relationPhone,
             inviteCodePlaceholder: inviteCodePlaceholder
         )
+    }
+
+    private func reloadDraftFromStore() {
+        draft = store.state.profile
+        relationName = store.state.familyBindingDraft?.relationName ?? ""
+        relationPhone = store.state.familyBindingDraft?.relationPhone ?? ""
+        inviteCodePlaceholder = store.state.familyBindingDraft?.inviteCodePlaceholder ?? "INVITE-准备中"
+    }
+
+    @MainActor
+    private func performReset(mode: ResetMode) async {
+        guard !isResettingAllData else { return }
+        isResettingAllData = true
+        defer { isResettingAllData = false }
+
+        let result = await store.resetAllDataToFreshInstall(mode: mode)
+        reloadDraftFromStore()
+
+        switch result {
+        case .appOnly:
+            store.showGlobalBanner(message: "已清空 App 数据，已恢复到新用户状态。", level: .success)
+        case .appAndSystemCleared:
+            store.showGlobalBanner(message: "已清空 App 数据和系统提醒。", level: .success)
+        case .appClearedSystemPermissionDenied:
+            store.showGlobalBanner(message: "App 数据已清空；未授予提醒事项权限，系统提醒可能仍保留。", level: .info)
+        case .appClearedSystemFailed(let reason):
+            store.showGlobalBanner(message: "App 数据已清空；系统提醒清理失败：\(reason)", level: .info)
+        }
     }
 }
 

@@ -63,7 +63,7 @@ struct FamilyView: View {
                     }
                     .padding(.horizontal)
 
-                    SectionCard(title: "近期检查记录") {
+                    SectionCard(title: "近期检查报告") {
                         VStack(alignment: .leading, spacing: 10) {
                             ForEach(store.sortedCheckRecords().prefix(2)) { record in
                                 VStack(alignment: .leading, spacing: 6) {
@@ -93,7 +93,7 @@ struct FamilyView: View {
                             }
 
                             if store.sortedCheckRecords().isEmpty {
-                                Text("暂无检查记录")
+                                Text("暂无检查报告")
                                     .font(.footnote)
                                     .foregroundStyle(AppTheme.textSecondary)
                             }
@@ -101,7 +101,7 @@ struct FamilyView: View {
                     }
                     .padding(.horizontal)
 
-                    Spacer(minLength: 70)
+                    Spacer(minLength: AppLayout.tabPageScrollTailPadding)
                 }
                 .padding(.top, 12)
             }
@@ -120,6 +120,8 @@ struct FamilyView: View {
             .padding(.horizontal)
             .padding(.vertical, 12)
             .background(AppTheme.background)
+            .padding(.bottom, AppLayout.dockBottomInsetAboveTabBar)
+            .allowsHitTesting(false)
         }
         .font(AppTheme.bodyFont)
     }
@@ -176,12 +178,12 @@ struct FamilyView: View {
     }
 
     private func statusColor(for item: TimelineItem) -> Color {
-        if item.isCompleted { return Color(hex: "6BAB8A") }
+        if item.isCompleted { return AppTheme.statusSuccess }
         return timeToMinutes(item.timeText) <= currentMinutes ? AppTheme.actionPrimary : AppTheme.textSecondary
     }
 
     private func statusSoftColor(for item: TimelineItem) -> Color {
-        if item.isCompleted { return Color(hex: "EDF7F1") }
+        if item.isCompleted { return AppTheme.statusSuccessSoft }
         return timeToMinutes(item.timeText) <= currentMinutes ? AppTheme.accentSoft : AppTheme.surfaceMuted
     }
 

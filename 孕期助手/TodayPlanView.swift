@@ -39,21 +39,26 @@ struct TodayPlanView: View {
             .navigationTitle("今日计划")
             .navigationBarTitleDisplayMode(.inline)
             .safeAreaInset(edge: .bottom) {
-                Button {
-                    showingAddSheet = true
-                } label: {
-                    Text("+ 新增今日事项")
-                        .font(.subheadline.weight(.semibold))
-                        .frame(maxWidth: .infinity)
-                        .frame(minHeight: 44)
-                        .background(AppTheme.actionPrimary)
-                        .foregroundStyle(.white)
-                        .clipShape(RoundedRectangle(cornerRadius: 12))
-                        .padding(.horizontal)
-                        .padding(.top, 8)
-                        .padding(.bottom, AppLayout.dockBottomInsetAboveTabBar)
-                        .background(AppTheme.card)
+                VStack(spacing: 0) {
+                    Button {
+                        showingAddSheet = true
+                    } label: {
+                        Text("+ 新增今日事项")
+                            .font(.subheadline.weight(.semibold))
+                            .frame(maxWidth: .infinity)
+                            .frame(minHeight: 44)
+                            .background(AppTheme.actionPrimary)
+                            .foregroundStyle(.white)
+                            .clipShape(RoundedRectangle(cornerRadius: 12))
+                            .padding(.horizontal)
+                            .padding(.top, 8)
+                    }
+
+                    Color.clear
+                        .frame(height: AppLayout.dockBottomInsetAboveTabBar)
+                        .allowsHitTesting(false)
                 }
+                .background(AppTheme.card.allowsHitTesting(false))
             }
             .sheet(isPresented: $showingAddSheet) {
                 RecordAddView()

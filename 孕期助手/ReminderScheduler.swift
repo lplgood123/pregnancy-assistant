@@ -10,6 +10,30 @@ enum ReminderScheduler {
         try await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge])
     }
 
+    static func clearAllPendingNotifications() async {
+        let center = UNUserNotificationCenter.current()
+        let staticIDs = reminderIdentifiers()
+        center.removePendingNotificationRequests(withIdentifiers: staticIDs)
+        center.removeDeliveredNotifications(withIdentifiers: staticIDs)
+
+        let pending = await pendingNotificationRequests(center: center)
+        let dynamicIDs = pending
+            .map(\.identifier)
+            .filter(isAppManagedIdentifier)
+        if !dynamicIDs.isEmpty {
+            center.removePendingNotificationRequests(withIdentifiers: dynamicIDs)
+            center.removeDeliveredNotifications(withIdentifiers: dynamicIDs)
+        }
+
+        let delivered = await deliveredNotifications(center: center)
+        let deliveredIDs = delivered
+            .map(\.request.identifier)
+            .filter(isAppManagedIdentifier)
+        if !deliveredIDs.isEmpty {
+            center.removeDeliveredNotifications(withIdentifiers: deliveredIDs)
+        }
+    }
+
     static func scheduleAll(using store: PregnancyStore) async throws {
         let center = UNUserNotificationCenter.current()
         center.removePendingNotificationRequests(withIdentifiers: reminderIdentifiers())
@@ -145,6 +169,29 @@ enum ReminderScheduler {
             "appointment-day-before",
             "appointment-day-of"
         ]
+    }
+
+    private static func pendingNotificationRequests(center: UNUserNotificationCenter) async -> [UNNotificationRequest] {
+        await withCheckedContinuation { continuation in
+            center.getPendingNotificationRequests { requests in
+                continuation.resume(returning: requests)
+            }
+        }
+    }
+
+    private static func deliveredNotifications(center: UNUserNotificationCenter) async -> [UNNotification] {
+        await withCheckedContinuation { continuation in
+            center.getDeliveredNotifications { notifications in
+                continuation.resume(returning: notifications)
+            }
+        }
+    }
+
+    private static func isAppManagedIdentifier(_ identifier: String) -> Bool {
+        identifier.hasPrefix("medication-") ||
+        identifier.hasPrefix("appointment-") ||
+        identifier.hasPrefix("extra-") ||
+        identifier.hasPrefix("injection-")
     }
 
     static func cancelFollowUp(for period: TimePeriod) {

@@ -14,10 +14,10 @@ struct CheckDetailView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     VStack(alignment: .leading, spacing: 6) {
-                        Text("\(record.type.title)详情")
+                        Text("\(record.type.title)报告详情")
                             .font(.title3.weight(.semibold))
                             .foregroundStyle(AppTheme.textPrimary)
-                        Text("检查日期：\(formatDate(record.checkTime)) · 孕\(gestationalText)")
+                        Text("报告日期：\(formatDate(record.checkTime)) · 孕\(gestationalText)")
                             .font(.caption)
                             .foregroundStyle(AppTheme.textSecondary)
                     }
@@ -111,10 +111,10 @@ struct CheckDetailView: View {
                         .padding(.horizontal)
                     }
                 }
-                .padding(.bottom, AppLayout.scrollTailPadding)
+                .padding(.bottom, AppLayout.tabPageScrollTailPadding)
             }
         }
-        .navigationTitle("检查详情")
+        .navigationTitle("检查报告详情")
         .font(AppTheme.bodyFont)
     }
 
@@ -216,10 +216,10 @@ struct CheckDetailView: View {
     private func referenceStatusColor(for metric: CheckMetric) -> Color {
         guard let status = referenceStatusText(for: metric) else { return AppTheme.textSecondary }
         if status.contains("低于") || status.contains("高于") {
-            return Color(hex: "D4727A")
+            return AppTheme.statusError
         }
         if status.contains("参考范围内") {
-            return Color(hex: "6BAB8A")
+            return AppTheme.statusSuccess
         }
         return AppTheme.textSecondary
     }
@@ -271,8 +271,8 @@ struct CheckDetailView: View {
 
     private func trendColor(symbol: String) -> Color {
         switch symbol {
-        case "↑": return Color(hex: "6BAB8A")
-        case "↓": return Color(hex: "D4727A")
+        case "↑": return AppTheme.statusSuccess
+        case "↓": return AppTheme.statusError
         default: return AppTheme.textHint
         }
     }

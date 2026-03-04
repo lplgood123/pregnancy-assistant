@@ -37,7 +37,7 @@ struct OnboardingFlowView: View {
                         if !errorText.isEmpty {
                             Text(errorText)
                                 .font(.footnote)
-                                .foregroundStyle(Color(hex: "D4727A"))
+                                .foregroundStyle(AppTheme.statusError)
                                 .padding(.horizontal)
                         }
                     }
@@ -274,15 +274,7 @@ struct OnboardingFlowView: View {
     }
 
     private func dateRow(title: String, date: Binding<Date>) -> some View {
-        HStack {
-            Text(title)
-                .font(.footnote)
-                .foregroundStyle(AppTheme.textSecondary)
-                .frame(width: 88, alignment: .leading)
-            DatePicker("", selection: date, displayedComponents: .date)
-                .labelsHidden()
-                .frame(maxWidth: .infinity, alignment: .leading)
-        }
+        AppDateField(title, selection: date, titleWidth: 88)
     }
 
     private func timeRow(title: String, text: Binding<String>) -> some View {

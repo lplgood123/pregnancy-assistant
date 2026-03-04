@@ -1,7 +1,7 @@
 import SwiftUI
 
 enum RecordAddTab: String, CaseIterable, Identifiable {
-    case check = "检查记录"
+    case check = "检查报告"
     case medication = "用药/补剂"
 
     var id: String { rawValue }
@@ -72,7 +72,7 @@ struct RecordAddView: View {
                         if !errorText.isEmpty {
                             Text(errorText)
                                 .font(.footnote)
-                                .foregroundStyle(Color(hex: "D4727A"))
+                                .foregroundStyle(AppTheme.statusError)
                                 .padding(.horizontal)
                         }
                     }
@@ -115,17 +115,17 @@ struct RecordAddView: View {
     private var checkFormSection: some View {
         AppCard {
             VStack(alignment: .leading, spacing: 12) {
-                Text("检查记录")
+                Text("检查报告")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(AppTheme.textHint)
 
-                Picker("检查类型", selection: $checkType) {
+                Picker("报告类型", selection: $checkType) {
                     ForEach(availableCheckTypes, id: \.self) { type in
                         Text(type.title).tag(type)
                     }
                 }
 
-                DatePicker("检查日期", selection: $checkDate, displayedComponents: .date)
+                AppDateField("报告日期", selection: $checkDate, titleWidth: 88, displayFormat: "yyyy年M月d日")
 
                 if checkType == .custom {
                     TextField("指标名称（例如：甲功）", text: $customMetricLabel)
