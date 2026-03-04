@@ -1221,9 +1221,10 @@ struct ChatHomeView: View {
         let (date, label) = dateFromSemantic(semantic)
         let sections = store.medicationSections(for: date)
         let injectionDue = store.isInjectionDue(on: date)
+        let appointmentLines = scheduleAppointmentLines(on: date)
 
-        if sections.isEmpty && !injectionDue {
-            return "\(label)没有固定用药安排。"
+        if sections.isEmpty && !injectionDue && appointmentLines.isEmpty {
+            return "\(label)暂无已记录安排。"
         }
 
         var lines: [String] = sections.map { section in
@@ -1235,13 +1236,36 @@ struct ChatHomeView: View {
                     return "\(row.title)（\(row.subtitle)）"
                 }
                 .joined(separator: "、")
-            return "\(section.title)：\(names)"
+            return "用药 · \(section.title)：\(names)"
         }
         if injectionDue {
-            lines.append("打针：\(store.state.injectionPlan.title)（\(store.state.injectionPlan.detail)）")
+            let detail = store.state.injectionPlan.detail.trimmingCharacters(in: .whitespacesAndNewlines)
+            if detail.isEmpty {
+                lines.append("打针：\(store.state.injectionPlan.title)")
+            } else {
+                lines.append("打针：\(store.state.injectionPlan.title)（\(detail)）")
+            }
         }
+        lines.append(contentsOf: appointmentLines)
 
-        return "\(label)用药清单：\n" + lines.joined(separator: "\n")
+        return "\(label)安排：\n" + lines.joined(separator: "\n")
+    }
+
+    private func scheduleAppointmentLines(on date: Date) -> [String] {
+        let sameDayAppointments = store.activeAppointments
+            .filter { appointment in
+                !appointment.isDone && Calendar.current.isDate(appointment.dueDate, inSameDayAs: date)
+            }
+            .sorted { $0.dueDate < $1.dueDate }
+
+        return sameDayAppointments.map { appointment in
+            let timeText = store.appointmentTimeText(appointment.dueDate)
+            let detail = appointment.detail.trimmingCharacters(in: .whitespacesAndNewlines)
+            if detail.isEmpty {
+                return "复诊：\(timeText) \(appointment.title)"
+            }
+            return "复诊：\(timeText) \(appointment.title)（\(detail)）"
+        }
     }
 
     private func dateFromSemantic(_ text: String) -> (date: Date, label: String) {
