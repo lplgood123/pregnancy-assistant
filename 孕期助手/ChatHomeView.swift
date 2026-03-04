@@ -61,6 +61,7 @@ struct ChatHomeView: View {
     @State private var isTyping = false
     @State private var typingStageText = "小助手正在思考…"
     @State private var openingLine = ""
+    @State private var dailyGreetingLine = ""
     @State private var isRefreshingOpeningSummary = false
     @State private var failedMessageID: String?
     @State private var failedUserInput: String?
@@ -128,7 +129,7 @@ struct ChatHomeView: View {
                         store.clearExpiredHomeSummaryCacheIfNeeded()
                         openingLine = immediateOpeningLine()
                         initializeSessionIfNeeded()
-                        injectDailyGreetingIfNeeded()
+                        refreshDailyGreetingBanner()
                         triggerBackendWarmupIfNeeded()
                         Task { await refreshOpeningLineWithAI(force: false) }
                         scrollToBottomStable(proxy)
@@ -156,12 +157,12 @@ struct ChatHomeView: View {
                     .onChange(of: store.resetEpoch) { _, _ in
                         clearLocalSessionState()
                         initializeSessionIfNeeded()
-                        injectDailyGreetingIfNeeded()
+                        refreshDailyGreetingBanner()
                         scrollToBottomStable(proxy)
                     }
                     .onChange(of: scenePhase) { _, newPhase in
                         guard newPhase == .active else { return }
-                        injectDailyGreetingIfNeeded()
+                        refreshDailyGreetingBanner()
                         scrollToBottomStable(proxy)
                     }
                 }
@@ -343,6 +344,25 @@ struct ChatHomeView: View {
                 BadgePill(text: "孕 \(store.gestationalWeekText)")
                 BadgePill(text: "预产期 \(store.formatDate(store.dueDate))")
                 Spacer()
+            }
+
+            if !dailyGreetingLine.isEmpty {
+                Text(dailyGreetingLine)
+                    .font(.footnote)
+                    .foregroundStyle(AppTheme.textSecondary)
+                    .lineLimit(3)
+                    .multilineTextAlignment(.leading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 8)
+                    .background(
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .fill(AppTheme.card)
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .stroke(AppTheme.borderLight, lineWidth: 1)
+                    )
             }
         }
         .padding(.horizontal)
@@ -655,16 +675,12 @@ struct ChatHomeView: View {
         imageSource = nil
     }
 
-    private func injectDailyGreetingIfNeeded(now: Date = Date()) {
-        if chatMessages.isEmpty {
-            let stored = store.homeChatMessages()
-            if !stored.isEmpty {
-                chatMessages = stored
-            }
+    private func refreshDailyGreetingBanner(now: Date = Date()) {
+        if let greeting = store.takeDailyGreetingIfNeeded(now: now) {
+            dailyGreetingLine = greeting.text
+            return
         }
-        guard let greeting = store.takeDailyGreetingIfNeeded(now: now) else { return }
-        chatMessages.append(greeting)
-        store.saveHomeChatMessages(chatMessages)
+        dailyGreetingLine = store.dailyGreetingText(now: now)
     }
 
     private func restorePendingActionIfNeeded() {
