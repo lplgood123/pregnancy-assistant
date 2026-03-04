@@ -659,6 +659,15 @@ enum HomeTimelineScope {
     case all
 }
 
+struct HomeGreetingCardSnapshot {
+    var warmGreeting: String
+    var overdueItems: [TimelineItem]
+    var todayExtraItems: [TimelineItem]
+    var tomorrowItems: [TimelineItem]
+    var showTomorrowHint: Bool
+    var pendingMedicalCount: Int
+}
+
 struct HomeSummary {
     var dateText: String
     var gestationalText: String
@@ -2665,6 +2674,10 @@ final class PregnancyStore: ObservableObject {
     }
 
     func homeWarmGreetingLine(now: Date = Date()) -> String {
+        homeGreetingCardSnapshot(now: now).warmGreeting
+    }
+
+    func homeGreetingCardSnapshot(now: Date = Date()) -> HomeGreetingCardSnapshot {
         let hour = calendar.component(.hour, from: now)
         let salutation: String
         switch hour {
@@ -2680,11 +2693,80 @@ final class PregnancyStore: ObservableObject {
 
         let name = state.profile.name.trimmingCharacters(in: .whitespacesAndNewlines)
         let greeting = name.isEmpty ? salutation : "\(name)，\(salutation)"
-        let pendingMedicalCount = todayTimelineItems(scope: .medical, includeCompleted: false, now: now).count
-        if pendingMedicalCount == 0 {
-            return "\(greeting)，今天医疗安排已完成。"
+        let allMedicalToday = todayTimelineItems(scope: .medical, includeCompleted: true, now: now)
+        let pendingMedicalItems = allMedicalToday.filter { !$0.isCompleted }
+        let pendingMedicalCount = pendingMedicalItems.count
+        let currentMinutes = calendar.component(.hour, from: now) * 60 + calendar.component(.minute, from: now)
+
+        let overdueItems = pendingMedicalItems.filter { item in
+            guard let itemMinutes = timeToMinutes(item.timeText) else { return false }
+            return itemMinutes <= currentMinutes
         }
-        return "\(greeting)，今天还有 \(pendingMedicalCount) 项医疗安排，我会陪你按节奏完成。"
+
+        let overdueIDs = Set(overdueItems.map(\.id))
+        let todayExtraItems = pendingMedicalItems.filter { item in
+            if item.kind == .appointment || item.kind == .check {
+                return !overdueIDs.contains(item.id)
+            }
+            if item.id.hasPrefix("extra-") || item.id.hasPrefix("injection-") {
+                return !overdueIDs.contains(item.id)
+            }
+            return false
+        }
+
+        let tomorrow = calendar.date(byAdding: .day, value: 1, to: calendar.startOfDay(for: now))
+            ?? calendar.startOfDay(for: now)
+        let tomorrowItems = timelineItems(for: tomorrow)
+            .filter { $0.kind != .habit && !$0.isCompleted }
+            .sorted { lhs, rhs in
+                let lhsMinutes = timeToMinutes(lhs.timeText) ?? Int.max
+                let rhsMinutes = timeToMinutes(rhs.timeText) ?? Int.max
+                if lhsMinutes != rhsMinutes {
+                    return lhsMinutes < rhsMinutes
+                }
+                if lhs.kind != rhs.kind {
+                    return timelineKindSortRank(lhs.kind) < timelineKindSortRank(rhs.kind)
+                }
+                return lhs.id < rhs.id
+            }
+
+        let showTomorrowHint = hour >= 18 && !tomorrowItems.isEmpty
+        let warmGreeting: String
+        if pendingMedicalCount == 0 {
+            warmGreeting = "\(greeting)，今天安排已经完成。"
+        } else {
+            warmGreeting = "\(greeting)，今天还有 \(pendingMedicalCount) 项医疗安排。"
+        }
+
+        return HomeGreetingCardSnapshot(
+            warmGreeting: warmGreeting,
+            overdueItems: overdueItems,
+            todayExtraItems: todayExtraItems,
+            tomorrowItems: tomorrowItems,
+            showTomorrowHint: showTomorrowHint,
+            pendingMedicalCount: pendingMedicalCount
+        )
+    }
+
+    func formatOverdueLine(items: [TimelineItem], pendingMedicalCount: Int) -> String? {
+        guard pendingMedicalCount > 0 else { return nil }
+        if items.isEmpty {
+            return "截止当前时间的安排都已完成，后续还有 \(pendingMedicalCount) 项待处理。"
+        }
+        return "到现在还有这些安排没完成：\(timelinePreviewText(items, limit: 3))。"
+    }
+
+    func formatTodayExtraLine(items: [TimelineItem]) -> String? {
+        guard !items.isEmpty else { return nil }
+        return "另外今天还有：\(timelinePreviewText(items, limit: 3))。"
+    }
+
+    func formatTomorrowHintLine(items: [TimelineItem]) -> String? {
+        guard !items.isEmpty else { return nil }
+        if let first = items.first {
+            return "今晚提醒：明天有 \(items.count) 项安排，最早 \(first.timeText) \(first.title)。"
+        }
+        return "今晚提醒：明天有安排。"
     }
 
     func todayTimelineItems(
@@ -3203,6 +3285,19 @@ final class PregnancyStore: ObservableObject {
         case .habit:
             return 3
         }
+    }
+
+    private func timelinePreviewText(_ items: [TimelineItem], limit: Int) -> String {
+        guard !items.isEmpty else { return "" }
+        let clipped = Array(items.prefix(limit))
+        var parts = clipped.map { item in
+            "\(item.timeText) \(item.title)"
+        }
+        let remain = items.count - clipped.count
+        if remain > 0 {
+            parts.append("等 \(remain) 项")
+        }
+        return parts.joined(separator: "、")
     }
 
     func appointmentTimeText(_ date: Date) -> String {
