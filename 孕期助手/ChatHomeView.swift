@@ -61,7 +61,6 @@ struct ChatHomeView: View {
     @State private var isTyping = false
     @State private var typingStageText = "小助手正在思考…"
     @State private var openingLine = ""
-    @State private var dailyGreetingLine = ""
     @State private var isRefreshingOpeningSummary = false
     @State private var failedMessageID: String?
     @State private var failedUserInput: String?
@@ -129,7 +128,7 @@ struct ChatHomeView: View {
                         store.clearExpiredHomeSummaryCacheIfNeeded()
                         openingLine = immediateOpeningLine()
                         initializeSessionIfNeeded()
-                        refreshDailyGreetingBanner()
+                        markDailyGreetingSeenIfNeeded()
                         triggerBackendWarmupIfNeeded()
                         Task { await refreshOpeningLineWithAI(force: false) }
                         scrollToBottomStable(proxy)
@@ -157,12 +156,12 @@ struct ChatHomeView: View {
                     .onChange(of: store.resetEpoch) { _, _ in
                         clearLocalSessionState()
                         initializeSessionIfNeeded()
-                        refreshDailyGreetingBanner()
+                        markDailyGreetingSeenIfNeeded()
                         scrollToBottomStable(proxy)
                     }
                     .onChange(of: scenePhase) { _, newPhase in
                         guard newPhase == .active else { return }
-                        refreshDailyGreetingBanner()
+                        markDailyGreetingSeenIfNeeded()
                         scrollToBottomStable(proxy)
                     }
                 }
@@ -243,22 +242,7 @@ struct ChatHomeView: View {
     }
 
     private var conversationSection: some View {
-        let openingText = openingLine.isEmpty ? store.homeOpeningLine() : openingLine
         return VStack(alignment: .leading, spacing: 10) {
-            if visibleMessages.isEmpty {
-                AssistantBubble {
-                    Text(openingText)
-                        .font(.subheadline)
-                        .foregroundStyle(AppTheme.textPrimary)
-                        .textSelection(.enabled)
-                        .contextMenu {
-                            Button("复制") {
-                                copyToPasteboard(openingText)
-                            }
-                        }
-                }
-            }
-
             ForEach(visibleMessages) { message in
                 VStack(alignment: .leading, spacing: 4) {
                     if message.role == .assistant {
@@ -335,7 +319,10 @@ struct ChatHomeView: View {
     }
 
     private var topFixedInfoBar: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        let summary = store.homeSummary()
+        let pendingItems = todayPendingItems
+
+        return VStack(alignment: .leading, spacing: 8) {
             Text("孕期健康伙伴")
                 .font(.system(size: 24, weight: .bold))
                 .foregroundStyle(AppTheme.textPrimary)
@@ -346,24 +333,57 @@ struct ChatHomeView: View {
                 Spacer()
             }
 
-            if !dailyGreetingLine.isEmpty {
-                Text(dailyGreetingLine)
-                    .font(.footnote)
-                    .foregroundStyle(AppTheme.textSecondary)
-                    .lineLimit(3)
-                    .multilineTextAlignment(.leading)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 8)
-                    .background(
-                        RoundedRectangle(cornerRadius: 10, style: .continuous)
-                            .fill(AppTheme.card)
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 10, style: .continuous)
-                            .stroke(AppTheme.borderLight, lineWidth: 1)
-                    )
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text("今日信息")
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(AppTheme.textPrimary)
+                    Spacer()
+                    Text("已完成 \(summary.done)/\(summary.total) · 剩余 \(summary.left)")
+                        .font(.caption)
+                        .foregroundStyle(AppTheme.textSecondary)
+                }
+
+                if pendingItems.isEmpty {
+                    Text("今天已无待办安排。")
+                        .font(.footnote)
+                        .foregroundStyle(AppTheme.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else {
+                    ForEach(pendingItems) { item in
+                        HStack(alignment: .top, spacing: 8) {
+                            Text(item.timeText)
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(AppTheme.textSecondary)
+                                .frame(width: 44, alignment: .leading)
+
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(item.title)
+                                    .font(.footnote.weight(.semibold))
+                                    .foregroundStyle(AppTheme.textPrimary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                if !item.subtitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                                    Text(item.subtitle)
+                                        .font(.caption2)
+                                        .foregroundStyle(AppTheme.textSecondary)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
+                            }
+                        }
+                    }
+                }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .background(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(AppTheme.card)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .stroke(AppTheme.borderLight, lineWidth: 1)
+            )
         }
         .padding(.horizontal)
         .padding(.top, 6)
@@ -675,12 +695,14 @@ struct ChatHomeView: View {
         imageSource = nil
     }
 
-    private func refreshDailyGreetingBanner(now: Date = Date()) {
-        if let greeting = store.takeDailyGreetingIfNeeded(now: now) {
-            dailyGreetingLine = greeting.text
-            return
-        }
-        dailyGreetingLine = store.dailyGreetingText(now: now)
+    private var todayPendingItems: [TimelineItem] {
+        store.timelineItems(for: Date())
+            .filter { !$0.isCompleted }
+            .sorted { (store.timeToMinutes($0.timeText) ?? 0) < (store.timeToMinutes($1.timeText) ?? 0) }
+    }
+
+    private func markDailyGreetingSeenIfNeeded(now: Date = Date()) {
+        _ = store.takeDailyGreetingIfNeeded(now: now)
     }
 
     private func restorePendingActionIfNeeded() {
