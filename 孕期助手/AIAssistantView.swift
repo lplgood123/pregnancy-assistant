@@ -1182,9 +1182,8 @@ struct ReminderSettingsView: View {
     @State private var lunchTime = Date()
     @State private var dinnerTime = Date()
     @State private var sleepTime = Date()
-    @State private var minutesBefore = 15
     @State private var enableSystemReminders = false
-    @State private var reminderHint = ""
+    @State private var didLoad = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -1194,24 +1193,9 @@ struct ReminderSettingsView: View {
             settingField(title: "晚餐时间", selection: $dinnerTime)
             settingField(title: "睡觉时间", selection: $sleepTime)
 
-            Stepper("提前提醒：\(minutesBefore) 分钟", value: $minutesBefore, in: 0...120, step: 5)
-                .font(.footnote.weight(.semibold))
-                .foregroundStyle(AppTheme.textPrimary)
-
             Toggle("同步到 iOS 提醒事项", isOn: $enableSystemReminders)
                 .font(.footnote.weight(.semibold))
                 .foregroundStyle(AppTheme.textPrimary)
-
-            Button("保存提醒设置") {
-                saveAndSchedule()
-            }
-            .buttonStyle(AppPrimaryButtonStyle())
-
-            if !reminderHint.isEmpty {
-                Text(reminderHint)
-                    .font(.footnote)
-                    .foregroundStyle(AppTheme.textSecondary)
-            }
         }
         .padding(12)
         .background(AppTheme.surfaceMuted)
@@ -1223,9 +1207,15 @@ struct ReminderSettingsView: View {
             lunchTime = dateFromHHmm(config.lunchTime)
             dinnerTime = dateFromHHmm(config.dinnerTime)
             sleepTime = dateFromHHmm(config.sleepTime)
-            minutesBefore = config.minutesBefore
             enableSystemReminders = config.enableSystemReminders
+            didLoad = true
         }
+        .onChange(of: wakeUpTime) { _, _ in persistReminderConfigIfReady() }
+        .onChange(of: breakfastTime) { _, _ in persistReminderConfigIfReady() }
+        .onChange(of: lunchTime) { _, _ in persistReminderConfigIfReady() }
+        .onChange(of: dinnerTime) { _, _ in persistReminderConfigIfReady() }
+        .onChange(of: sleepTime) { _, _ in persistReminderConfigIfReady() }
+        .onChange(of: enableSystemReminders) { _, _ in persistReminderConfigIfReady() }
     }
 
     private func settingField(title: String, selection: Binding<Date>) -> some View {
@@ -1253,20 +1243,18 @@ struct ReminderSettingsView: View {
         }
     }
 
-    private func saveAndSchedule() {
+    private func persistReminderConfigIfReady() {
+        guard didLoad else { return }
         let newConfig = ReminderConfig(
             wakeUpTime: hhmmFromDate(wakeUpTime),
             breakfastTime: hhmmFromDate(breakfastTime),
             lunchTime: hhmmFromDate(lunchTime),
             dinnerTime: hhmmFromDate(dinnerTime),
             sleepTime: hhmmFromDate(sleepTime),
-            minutesBefore: minutesBefore,
+            minutesBefore: 0,
             enableSystemReminders: enableSystemReminders
         )
         store.saveReminderConfig(newConfig)
-        reminderHint = enableSystemReminders
-            ? "提醒设置已保存，将自动同步通知和提醒事项。"
-            : "提醒设置已保存，将自动同步通知。"
     }
 
     private func dateFromHHmm(_ text: String) -> Date {

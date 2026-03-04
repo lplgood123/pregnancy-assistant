@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 enum RecordAddTab: String, CaseIterable, Identifiable {
     case check = "检查报告"
@@ -8,6 +9,25 @@ enum RecordAddTab: String, CaseIterable, Identifiable {
 }
 
 struct RecordAddView: View {
+    private enum ImageSource: Identifiable {
+        case camera
+        case library
+
+        var id: Int {
+            switch self {
+            case .camera: return 1
+            case .library: return 2
+            }
+        }
+
+        var sourceType: UIImagePickerController.SourceType {
+            switch self {
+            case .camera: return .camera
+            case .library: return .photoLibrary
+            }
+        }
+    }
+
     private struct MetricTemplate: Identifiable {
         var id: String { key }
         var key: String
@@ -37,9 +57,17 @@ struct RecordAddView: View {
     @State private var medPeriod: TimePeriod = .afterDinner
 
     @State private var errorText = ""
+    @State private var showImageSourceDialog = false
+    @State private var imageSource: ImageSource?
+    @State private var ocrProcessing = false
+    @State private var ocrHint = ""
 
-    init(initialTab: RecordAddTab = .check) {
+    private let chatService = AIBackendChatService()
+    private let initialCheckType: CheckType?
+
+    init(initialTab: RecordAddTab = .check, initialCheckType: CheckType? = nil) {
         _tab = State(initialValue: initialTab)
+        self.initialCheckType = initialCheckType
     }
 
     var body: some View {
@@ -65,7 +93,7 @@ struct RecordAddView: View {
                             medicationFormSection
                             hintCard(
                                 systemImage: "clock",
-                                text: "语义时间说明：饭后会按对应餐点时间 +20 分钟提醒，睡前按睡觉时间 -30 分钟提醒。"
+                                text: "提醒会按你设置的时间准时触发，建议和日常作息一致。"
                             )
                         }
 
@@ -92,10 +120,33 @@ struct RecordAddView: View {
             }
             .font(AppTheme.bodyFont)
             .onAppear {
+                if let initialCheckType {
+                    checkType = initialCheckType
+                }
                 seedMetricDictionariesIfNeeded(for: checkType)
             }
             .onChange(of: checkType) { _, newType in
                 seedMetricDictionariesIfNeeded(for: newType)
+            }
+            .confirmationDialog("导入检查报告", isPresented: $showImageSourceDialog, titleVisibility: .visible) {
+                Button("拍照") {
+                    guard UIImagePickerController.isSourceTypeAvailable(.camera) else {
+                        errorText = "当前设备不支持拍照，请改用相册上传。"
+                        return
+                    }
+                    imageSource = .camera
+                }
+                Button("从相册选择") {
+                    imageSource = .library
+                }
+                Button("取消", role: .cancel) { }
+            }
+            .sheet(item: $imageSource) { source in
+                AppImagePicker(sourceType: source.sourceType) { image in
+                    Task {
+                        await processPickedImage(image)
+                    }
+                }
             }
         }
     }
@@ -126,6 +177,41 @@ struct RecordAddView: View {
                 }
 
                 AppDateField("报告日期", selection: $checkDate, titleWidth: 88, displayFormat: "yyyy年M月d日")
+
+                if checkType == .pregnancyPanel {
+                    HStack(spacing: 8) {
+                        Button {
+                            showImageSourceDialog = true
+                        } label: {
+                            Label("拍照/上传识别", systemImage: "camera.viewfinder")
+                                .font(.footnote.weight(.semibold))
+                                .foregroundStyle(AppTheme.actionPrimary)
+                                .frame(minHeight: 44)
+                                .padding(.horizontal, 10)
+                                .background(AppTheme.accentSoft)
+                                .clipShape(RoundedRectangle(cornerRadius: 8))
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(ocrProcessing)
+
+                        if ocrProcessing {
+                            HStack(spacing: 6) {
+                                ProgressView()
+                                    .controlSize(.small)
+                                Text("识别中...")
+                                    .font(.caption)
+                                    .foregroundStyle(AppTheme.textSecondary)
+                            }
+                        }
+                        Spacer(minLength: 0)
+                    }
+
+                    if !ocrHint.isEmpty {
+                        Text(ocrHint)
+                            .font(.caption)
+                            .foregroundStyle(AppTheme.textSecondary)
+                    }
+                }
 
                 if checkType == .custom {
                     TextField("指标名称（例如：甲功）", text: $customMetricLabel)
@@ -407,6 +493,7 @@ struct RecordAddView: View {
 
     private func save() {
         errorText = ""
+        ocrHint = ""
         switch tab {
         case .check:
             saveCheckRecord()
@@ -471,6 +558,101 @@ struct RecordAddView: View {
 
         store.addMedication(med)
         dismiss()
+    }
+
+    private func processPickedImage(_ image: UIImage) async {
+        guard checkType == .pregnancyPanel else { return }
+        ocrProcessing = true
+        defer { ocrProcessing = false }
+        errorText = ""
+        ocrHint = ""
+
+        do {
+            let recognizedText = try await ImageOCRService.recognizeText(from: image)
+            if let filled = await fillPregnancyPanelFromAI(recognizedText) ?? fillPregnancyPanelFromRegex(recognizedText) {
+                metricValues["hcg"] = filled.hcg
+                metricValues["progesterone"] = filled.progesterone
+                metricValues["estradiol"] = filled.estradiol
+                checkType = .pregnancyPanel
+                ocrHint = "已自动识别 HCG/孕酮/E2，请核对后保存。"
+            } else {
+                errorText = "未识别到完整的妊娠三项，请补充手动输入。"
+            }
+        } catch {
+            let message = (error as? LocalizedError)?.errorDescription ?? "图片识别失败，请稍后重试。"
+            errorText = message
+        }
+    }
+
+    private func fillPregnancyPanelFromAI(_ recognizedText: String) async -> (hcg: String, progesterone: String, estradiol: String)? {
+        let config = store.currentAIConfig()
+        guard !config.baseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+
+        let prompt = """
+        这是检查报告 OCR 文本，请按妊娠三项提取：HCG、孕酮、E2。只返回结构化意图 JSON。
+        OCR 文本：
+        \(recognizedText)
+        """
+
+        do {
+            let jsonText = try await chatService.sendWithRecovery(
+                config: config,
+                context: store.aiContextSummary(),
+                history: store.aiConversation(),
+                userInput: prompt,
+                onStage: nil
+            )
+            guard let action = AIParse.parse(jsonText) else { return nil }
+            let hcg = firstNumericText(from: action.slots["hcg"])
+            let p = firstNumericText(from: action.slots["progesterone"])
+            let e2 = firstNumericText(from: action.slots["estradiol"])
+            guard let hcg, let p, let e2 else { return nil }
+            return (hcg: hcg, progesterone: p, estradiol: e2)
+        } catch {
+            return nil
+        }
+    }
+
+    private func fillPregnancyPanelFromRegex(_ text: String) -> (hcg: String, progesterone: String, estradiol: String)? {
+        let hcg = firstCapture(in: text, patterns: [
+            #"(?i)hcg[^0-9]*([0-9]+(?:\.[0-9]+)?)"#,
+            #"(?i)β-?hcg[^0-9]*([0-9]+(?:\.[0-9]+)?)"#
+        ])
+        let progesterone = firstCapture(in: text, patterns: [
+            #"孕酮[^0-9]*([0-9]+(?:\.[0-9]+)?)"#,
+            #"(?i)progesterone[^0-9]*([0-9]+(?:\.[0-9]+)?)"#,
+            #"(?i)\bP\b[^0-9]*([0-9]+(?:\.[0-9]+)?)"#
+        ])
+        let estradiol = firstCapture(in: text, patterns: [
+            #"雌二醇[^0-9]*([0-9]+(?:\.[0-9]+)?)"#,
+            #"(?i)\bE2\b[^0-9]*([0-9]+(?:\.[0-9]+)?)"#,
+            #"(?i)estradiol[^0-9]*([0-9]+(?:\.[0-9]+)?)"#
+        ])
+
+        guard let hcg, let progesterone, let estradiol else { return nil }
+        return (hcg: hcg, progesterone: progesterone, estradiol: estradiol)
+    }
+
+    private func firstCapture(in text: String, patterns: [String]) -> String? {
+        for pattern in patterns {
+            guard let regex = try? NSRegularExpression(pattern: pattern) else { continue }
+            let range = NSRange(text.startIndex..<text.endIndex, in: text)
+            guard let match = regex.firstMatch(in: text, options: [], range: range),
+                  match.numberOfRanges > 1,
+                  let swiftRange = Range(match.range(at: 1), in: text) else {
+                continue
+            }
+            return String(text[swiftRange]).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return nil
+    }
+
+    private func firstNumericText(from raw: String?) -> String? {
+        guard let raw else { return nil }
+        if let direct = firstCapture(in: raw, patterns: [#"([0-9]+(?:\.[0-9]+)?)"#]) {
+            return direct
+        }
+        return nil
     }
 }
 

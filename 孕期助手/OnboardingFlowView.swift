@@ -12,8 +12,12 @@ struct OnboardingFlowView: View {
         lunchTime: "12:30",
         dinnerTime: "18:30",
         sleepTime: "22:30",
-        minutesBefore: 15
+        minutesBefore: 0
     )
+    @State private var breakfastTime = Date()
+    @State private var lunchTime = Date()
+    @State private var dinnerTime = Date()
+    @State private var sleepTime = Date()
     @State private var skippedFields: Set<String> = []
     @State private var errorText = ""
 
@@ -93,10 +97,10 @@ struct OnboardingFlowView: View {
 
                     fieldRow(title: "姓名", text: binding(\.name), placeholder: "例如：小李")
                     dateRow(title: "末次月经", date: binding(\.lastPeriodDate))
-                    timeRow(title: "早餐时间", text: $reminderDraft.breakfastTime)
-                    timeRow(title: "午餐时间", text: $reminderDraft.lunchTime)
-                    timeRow(title: "晚餐时间", text: $reminderDraft.dinnerTime)
-                    timeRow(title: "睡觉时间", text: $reminderDraft.sleepTime)
+                    timeRow(title: "早餐时间", selection: $breakfastTime)
+                    timeRow(title: "午餐时间", selection: $lunchTime)
+                    timeRow(title: "晚餐时间", selection: $dinnerTime)
+                    timeRow(title: "睡觉时间", selection: $sleepTime)
                 }
             }
             .padding(.horizontal)
@@ -138,10 +142,10 @@ struct OnboardingFlowView: View {
                     confirmRow(label: "姓名", value: profileDraft.name)
                     confirmRow(label: "当前孕周", value: gestationalText(for: profileDraft.lastPeriodDate))
                     confirmRow(label: "预产期", value: formatDate(dueDate(for: profileDraft.lastPeriodDate)))
-                    confirmRow(label: "早餐提醒", value: "\(reminderDraft.breakfastTime) → \(ReminderScheduler.semanticAdjustedTimeText(for: .afterBreakfast, baseTime: reminderDraft.breakfastTime))")
-                    confirmRow(label: "午餐提醒", value: "\(reminderDraft.lunchTime) → \(ReminderScheduler.semanticAdjustedTimeText(for: .afterLunch, baseTime: reminderDraft.lunchTime))")
-                    confirmRow(label: "晚餐提醒", value: "\(reminderDraft.dinnerTime) → \(ReminderScheduler.semanticAdjustedTimeText(for: .afterDinner, baseTime: reminderDraft.dinnerTime))")
-                    confirmRow(label: "睡前提醒", value: "\(reminderDraft.sleepTime) → \(ReminderScheduler.semanticAdjustedTimeText(for: .beforeSleep, baseTime: reminderDraft.sleepTime))")
+                    confirmRow(label: "早餐提醒", value: reminderDraft.breakfastTime)
+                    confirmRow(label: "午餐提醒", value: reminderDraft.lunchTime)
+                    confirmRow(label: "晚餐提醒", value: reminderDraft.dinnerTime)
+                    confirmRow(label: "睡前提醒", value: reminderDraft.sleepTime)
                 }
             }
             .padding(.horizontal)
@@ -205,25 +209,12 @@ struct OnboardingFlowView: View {
             return false
         }
 
-        let breakfast = normalizedTime(reminderDraft.breakfastTime)
-        let lunch = normalizedTime(reminderDraft.lunchTime)
-        let dinner = normalizedTime(reminderDraft.dinnerTime)
-        let sleep = normalizedTime(reminderDraft.sleepTime)
-
-        guard let breakfast, let lunch, let dinner, let sleep else {
-            errorText = "时间格式请用 HH:mm，例如 08:30"
-            return false
-        }
-
-        reminderDraft.breakfastTime = breakfast
-        reminderDraft.lunchTime = lunch
-        reminderDraft.dinnerTime = dinner
-        reminderDraft.sleepTime = sleep
+        reminderDraft.breakfastTime = hhmmFromDate(breakfastTime)
+        reminderDraft.lunchTime = hhmmFromDate(lunchTime)
+        reminderDraft.dinnerTime = hhmmFromDate(dinnerTime)
+        reminderDraft.sleepTime = hhmmFromDate(sleepTime)
+        reminderDraft.minutesBefore = 0
         return true
-    }
-
-    private func normalizedTime(_ text: String) -> String? {
-        store.normalizeTimeText(text)
     }
 
     private func optionalFieldRow(title: String, key: String, text: Binding<String>) -> some View {
@@ -277,17 +268,27 @@ struct OnboardingFlowView: View {
         AppDateField(title, selection: date, titleWidth: 88)
     }
 
-    private func timeRow(title: String, text: Binding<String>) -> some View {
-        HStack {
-            Text(title)
-                .font(.footnote)
-                .foregroundStyle(AppTheme.textSecondary)
-                .frame(width: 88, alignment: .leading)
-            TextField("HH:mm", text: text)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled(true)
-                .textFieldStyle(.roundedBorder)
+    private func timeRow(title: String, selection: Binding<Date>) -> some View {
+        AppTimeField(title, selection: selection, titleWidth: 88)
+    }
+
+    private func dateFromHHmm(_ text: String) -> Date {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "HH:mm"
+        let normalized = store.normalizeTimeText(text) ?? text
+        guard let parsed = formatter.date(from: normalized) else {
+            return Calendar.current.date(bySettingHour: 8, minute: 0, second: 0, of: Date()) ?? Date()
         }
+        let comps = Calendar.current.dateComponents([.hour, .minute], from: parsed)
+        return Calendar.current.date(bySettingHour: comps.hour ?? 8, minute: comps.minute ?? 0, second: 0, of: Date()) ?? Date()
+    }
+
+    private func hhmmFromDate(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "HH:mm"
+        return formatter.string(from: date)
     }
 
     private func binding<Value>(_ keyPath: WritableKeyPath<Profile, Value>) -> Binding<Value> {
@@ -323,6 +324,10 @@ struct OnboardingFlowView: View {
         didLoad = true
         profileDraft = store.state.profile
         reminderDraft = store.currentReminderConfig()
+        breakfastTime = dateFromHHmm(reminderDraft.breakfastTime)
+        lunchTime = dateFromHHmm(reminderDraft.lunchTime)
+        dinnerTime = dateFromHHmm(reminderDraft.dinnerTime)
+        sleepTime = dateFromHHmm(reminderDraft.sleepTime)
         skippedFields = Set(store.state.profileOptionalFieldsSkipped)
         step = max(1, min(store.state.onboardingStep, 3))
         store.updateOnboardingStep(step)

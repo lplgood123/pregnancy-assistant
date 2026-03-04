@@ -276,15 +276,6 @@ struct ProfileView: View {
                                 ReminderSettingsView()
                                     .environmentObject(store)
                             }
-                            AppCard {
-                                HStack(alignment: .top, spacing: 8) {
-                                    Image(systemName: "lightbulb")
-                                        .foregroundStyle(AppTheme.actionPrimary)
-                                    Text("提醒映射说明：饭后=对应餐点 +20 分钟；睡前=睡觉时间 -30 分钟。")
-                                        .font(.caption)
-                                        .foregroundStyle(AppTheme.textSecondary)
-                                }
-                            }
                         }
 
                         profileSection(title: "健康信息") {

@@ -2,8 +2,6 @@ import Foundation
 import UserNotifications
 
 enum ReminderScheduler {
-    private static let afterMealOffsetMinutes = 20
-    private static let beforeSleepOffsetMinutes = 30
     private static let followUpMinutes = 30
 
     static func requestAuthorization() async throws -> Bool {
@@ -200,14 +198,8 @@ enum ReminderScheduler {
     }
 
     private static func semanticAdjustedTime(for period: TimePeriod, baseHour: Int, baseMinute: Int) -> (hour: Int, minute: Int) {
-        switch period {
-        case .afterBreakfast, .afterLunch, .afterDinner:
-            return shiftedTime(hour: baseHour, minute: baseMinute, deltaMinutes: afterMealOffsetMinutes)
-        case .beforeSleep:
-            return shiftedTime(hour: baseHour, minute: baseMinute, deltaMinutes: -beforeSleepOffsetMinutes)
-        default:
-            return (baseHour, baseMinute)
-        }
+        _ = period
+        return (baseHour, baseMinute)
     }
 
     static func semanticAdjustedTimeText(for period: TimePeriod, baseTime: String) -> String {

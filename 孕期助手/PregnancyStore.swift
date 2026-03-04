@@ -1479,7 +1479,6 @@ final class PregnancyStore: ObservableObject {
             return reply
         case "update_reminder_time":
             let semantic = action.slots["time_semantic"] ?? ""
-            let minutesText = action.slots["minutes_before"] ?? ""
             var updatedParts: [String] = []
             var config = currentReminderConfig()
             var changed = false
@@ -1507,14 +1506,8 @@ final class PregnancyStore: ObservableObject {
                 }
             }
 
-            if let minutes = Int(minutesText), minutes >= 0 {
-                config.minutesBefore = minutes
-                updatedParts.append("提前提醒 \(minutes) 分钟")
-                changed = true
-            }
-
             if updatedParts.isEmpty {
-                return "没识别到要修改的时间或提前分钟数"
+                return "没识别到要修改的提醒时段或时间"
             }
             if changed {
                 saveReminderConfig(config)
@@ -2040,13 +2033,24 @@ final class PregnancyStore: ObservableObject {
     }
 
     func currentReminderConfig() -> ReminderConfig {
-        state.reminderConfig ?? ReminderConfig(
+        if let config = state.reminderConfig {
+            return ReminderConfig(
+                wakeUpTime: config.wakeUpTime,
+                breakfastTime: config.breakfastTime,
+                lunchTime: config.lunchTime,
+                dinnerTime: config.dinnerTime,
+                sleepTime: config.sleepTime,
+                minutesBefore: 0,
+                enableSystemReminders: config.enableSystemReminders
+            )
+        }
+        return ReminderConfig(
             wakeUpTime: "07:00",
             breakfastTime: "08:30",
             lunchTime: "12:30",
             dinnerTime: "18:30",
             sleepTime: "22:30",
-            minutesBefore: 15,
+            minutesBefore: 0,
             enableSystemReminders: false
         )
     }
@@ -2058,7 +2062,7 @@ final class PregnancyStore: ObservableObject {
             lunchTime: config.lunchTime.trimmingCharacters(in: .whitespacesAndNewlines),
             dinnerTime: config.dinnerTime.trimmingCharacters(in: .whitespacesAndNewlines),
             sleepTime: config.sleepTime.trimmingCharacters(in: .whitespacesAndNewlines),
-            minutesBefore: max(config.minutesBefore, 0),
+            minutesBefore: 0,
             enableSystemReminders: config.enableSystemReminders
         )
         markReminderRulesDirty()
@@ -2471,28 +2475,28 @@ final class PregnancyStore: ObservableObject {
             return [
                 QuickCommand(title: "今日安排", prompt: "请汇总我今天需要注意的安排：用药、打针、回诊和其他提醒。", icon: "calendar.badge.clock"),
                 QuickCommand(title: "记录妊娠三项", prompt: "我今天做了妊娠三项，帮我记录", icon: "testtube.2"),
-                QuickCommand(title: "新增补剂", prompt: "晚饭后我要吃钙片，帮我记录", icon: "pills"),
-                QuickCommand(title: "加复查预约", prompt: "帮我加一个复查预约，时间是明天上午9点", icon: "calendar"),
-                QuickCommand(title: "明天吃什么药", prompt: "明天吃什么药", icon: "list.bullet.clipboard"),
-                QuickCommand(title: "调整提醒时间", prompt: "把晚饭后提醒改成晚上7点", icon: "alarm")
+                QuickCommand(title: "用药调整", prompt: "我有用药要调整，帮我记录。请先问我具体要调整哪些药、时间和剂量。", icon: "pills"),
+                QuickCommand(title: "加复查预约", prompt: "我想新增一个复查预约，先问我日期和时间后再帮我记录。", icon: "calendar"),
+                QuickCommand(title: "明天吃什么药", prompt: "帮我按时段列出明天要吃的药。", icon: "list.bullet.clipboard"),
+                QuickCommand(title: "调整提醒时间", prompt: "我想调整提醒时间，先问我想改哪个时段和改到几点。", icon: "alarm")
             ]
         case .middle:
             return [
                 QuickCommand(title: "今日安排", prompt: "请汇总我今天需要注意的安排：用药、打针、回诊和其他提醒。", icon: "calendar.badge.clock"),
                 QuickCommand(title: "记录NT/唐筛", prompt: "我今天做了NT或唐筛，帮我记录", icon: "chart.bar"),
-                QuickCommand(title: "加产检预约", prompt: "帮我新增一次产检预约，下周三上午9点", icon: "cross.case"),
-                QuickCommand(title: "新增补剂", prompt: "帮我新增一个孕期补剂提醒", icon: "pills"),
-                QuickCommand(title: "明天吃什么药", prompt: "明天吃什么药", icon: "list.bullet.clipboard"),
-                QuickCommand(title: "调整提醒时间", prompt: "把睡前提醒改成22点", icon: "alarm")
+                QuickCommand(title: "加复查预约", prompt: "我想新增一个复查预约，先问我日期和时间后再帮我记录。", icon: "cross.case"),
+                QuickCommand(title: "用药调整", prompt: "我有用药要调整，帮我记录。请先问我具体要调整哪些药、时间和剂量。", icon: "pills"),
+                QuickCommand(title: "明天吃什么药", prompt: "帮我按时段列出明天要吃的药。", icon: "list.bullet.clipboard"),
+                QuickCommand(title: "调整提醒时间", prompt: "我想调整提醒时间，先问我想改哪个时段和改到几点。", icon: "alarm")
             ]
         case .late:
             return [
                 QuickCommand(title: "今日安排", prompt: "请汇总我今天需要注意的安排：用药、打针、回诊和其他提醒。", icon: "calendar.badge.clock"),
                 QuickCommand(title: "记录胎动", prompt: "我想记录今天胎动情况", icon: "figure.and.child.holdinghands"),
-                QuickCommand(title: "加产检预约", prompt: "帮我新增一次产检预约", icon: "cross.case"),
-                QuickCommand(title: "新增补剂", prompt: "帮我新增一个睡前补剂提醒", icon: "pills"),
-                QuickCommand(title: "明天吃什么药", prompt: "明天吃什么药", icon: "list.bullet.clipboard"),
-                QuickCommand(title: "调整提醒时间", prompt: "把晚饭后提醒改成晚上7点20", icon: "alarm")
+                QuickCommand(title: "加复查预约", prompt: "我想新增一个复查预约，先问我日期和时间后再帮我记录。", icon: "cross.case"),
+                QuickCommand(title: "用药调整", prompt: "我有用药要调整，帮我记录。请先问我具体要调整哪些药、时间和剂量。", icon: "pills"),
+                QuickCommand(title: "明天吃什么药", prompt: "帮我按时段列出明天要吃的药。", icon: "list.bullet.clipboard"),
+                QuickCommand(title: "调整提醒时间", prompt: "我想调整提醒时间，先问我想改哪个时段和改到几点。", icon: "alarm")
             ]
         }
     }
@@ -3066,7 +3070,7 @@ final class PregnancyStore: ObservableObject {
                 lunchTime: "12:30",
                 dinnerTime: "18:30",
                 sleepTime: "22:30",
-                minutesBefore: 15,
+                minutesBefore: 0,
                 enableSystemReminders: false
             ),
             aiConversation: [],

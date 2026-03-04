@@ -74,6 +74,7 @@ struct ChatHomeView: View {
     @State private var ocrProcessingState: OCRProcessingState = .idle
     @State private var showImageSourceDialog = false
     @State private var imageSource: ImageSource?
+    @State private var showQuickAddPregnancyPanel = false
     @State private var composerDockHeight: CGFloat = 0
     @FocusState private var inputFocused: Bool
     @StateObject private var speechInput = SpeechInputService()
@@ -226,6 +227,10 @@ struct ChatHomeView: View {
                     }
                 }
             }
+            .sheet(isPresented: $showQuickAddPregnancyPanel) {
+                RecordAddView(initialTab: .check, initialCheckType: .pregnancyPanel)
+                    .environmentObject(store)
+            }
             .onDisappear {
                 resetVoiceState(stopRecognition: true)
                 store.saveHomeChatMessages(chatMessages)
@@ -239,16 +244,18 @@ struct ChatHomeView: View {
     private var conversationSection: some View {
         let openingText = openingLine.isEmpty ? store.homeOpeningLine() : openingLine
         return VStack(alignment: .leading, spacing: 10) {
-            AssistantBubble {
-                Text(openingText)
-                    .font(.subheadline)
-                    .foregroundStyle(AppTheme.textPrimary)
-                    .textSelection(.enabled)
-                    .contextMenu {
-                        Button("复制") {
-                            copyToPasteboard(openingText)
+            if visibleMessages.isEmpty {
+                AssistantBubble {
+                    Text(openingText)
+                        .font(.subheadline)
+                        .foregroundStyle(AppTheme.textPrimary)
+                        .textSelection(.enabled)
+                        .contextMenu {
+                            Button("复制") {
+                                copyToPasteboard(openingText)
+                            }
                         }
-                    }
+                }
             }
 
             ForEach(visibleMessages) { message in
@@ -781,18 +788,15 @@ struct ChatHomeView: View {
     private func handleQuickCommandTap(_ command: QuickCommand) {
         let prompt = command.prompt.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !prompt.isEmpty else { return }
-        let directSendTodayPlan =
-            command.title.contains("今日安排") ||
-            prompt.contains("今天需要注意的安排") ||
-            prompt.contains("今日安排")
 
-        if directSendTodayPlan {
-            Task {
-                await submitUserInput(prompt)
-            }
-        } else {
-            inputText = prompt
-            inputFocused = true
+        if command.title.contains("记录妊娠三项") {
+            inputFocused = false
+            showQuickAddPregnancyPanel = true
+            return
+        }
+
+        Task {
+            await submitUserInput(prompt)
         }
     }
 
