@@ -654,6 +654,11 @@ struct TimelineSection: Identifiable {
     var completedItems: [TimelineItem]
 }
 
+enum HomeTimelineScope {
+    case medical
+    case all
+}
+
 struct HomeSummary {
     var dateText: String
     var gestationalText: String
@@ -2659,6 +2664,63 @@ final class PregnancyStore: ObservableObject {
         return items
     }
 
+    func homeWarmGreetingLine(now: Date = Date()) -> String {
+        let hour = calendar.component(.hour, from: now)
+        let salutation: String
+        switch hour {
+        case 5..<11:
+            salutation = "早上好"
+        case 11..<14:
+            salutation = "中午好"
+        case 14..<18:
+            salutation = "下午好"
+        default:
+            salutation = "晚上好"
+        }
+
+        let name = state.profile.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let greeting = name.isEmpty ? salutation : "\(name)，\(salutation)"
+        let pendingMedicalCount = todayTimelineItems(scope: .medical, includeCompleted: false, now: now).count
+        if pendingMedicalCount == 0 {
+            return "\(greeting)，今天医疗安排已完成。"
+        }
+        return "\(greeting)，今天还有 \(pendingMedicalCount) 项医疗安排，我会陪你按节奏完成。"
+    }
+
+    func todayTimelineItems(
+        scope: HomeTimelineScope,
+        includeCompleted: Bool = true,
+        now: Date = Date()
+    ) -> [TimelineItem] {
+        let scopedItems = timelineItems(for: now).filter { item in
+            switch scope {
+            case .medical:
+                return item.kind != .habit
+            case .all:
+                return true
+            }
+        }
+
+        let completionFiltered: [TimelineItem]
+        if includeCompleted {
+            completionFiltered = scopedItems
+        } else {
+            completionFiltered = scopedItems.filter { !$0.isCompleted }
+        }
+
+        return completionFiltered.sorted { lhs, rhs in
+            let lhsMinutes = timeToMinutes(lhs.timeText) ?? Int.max
+            let rhsMinutes = timeToMinutes(rhs.timeText) ?? Int.max
+            if lhsMinutes != rhsMinutes {
+                return lhsMinutes < rhsMinutes
+            }
+            if lhs.kind != rhs.kind {
+                return timelineKindSortRank(lhs.kind) < timelineKindSortRank(rhs.kind)
+            }
+            return lhs.id < rhs.id
+        }
+    }
+
     func nextPendingAppointment() -> AppointmentItem? {
         activeAppointments
             .filter { !$0.isDone }
@@ -3128,6 +3190,19 @@ final class PregnancyStore: ObservableObject {
         let comps = text.split(separator: ":")
         guard comps.count == 2, let h = Int(comps[0]), let m = Int(comps[1]) else { return nil }
         return h * 60 + m
+    }
+
+    private func timelineKindSortRank(_ kind: TimelineItem.Kind) -> Int {
+        switch kind {
+        case .medication:
+            return 0
+        case .check:
+            return 1
+        case .appointment:
+            return 2
+        case .habit:
+            return 3
+        }
     }
 
     func appointmentTimeText(_ date: Date) -> String {
