@@ -1,4 +1,5 @@
 import Foundation
+import PhotosUI
 import SwiftUI
 import UIKit
 
@@ -47,6 +48,94 @@ struct ChatHomeView: View {
         }
     }
 
+    private enum HomeImageFlowMode: String {
+        case reportImport
+        case ingredientScan
+        case genericOcrChat
+
+        var title: String {
+            switch self {
+            case .reportImport:
+                return "记录报告单"
+            case .ingredientScan:
+                return "成分识别"
+            case .genericOcrChat:
+                return "通用识图问答"
+            }
+        }
+    }
+
+    private enum GuideDetailKind: String {
+        case weekGuide
+        case babyChange
+        case momChange
+
+        var title: String {
+            switch self {
+            case .weekGuide:
+                return "孕期指南"
+            case .babyChange:
+                return "宝宝变化"
+            case .momChange:
+                return "妈妈变化"
+            }
+        }
+    }
+
+    private enum Formatters {
+        static let hhmm: DateFormatter = {
+            let formatter = DateFormatter()
+            formatter.locale = Locale(identifier: "zh_CN")
+            formatter.dateFormat = "HH:mm"
+            return formatter
+        }()
+
+        static let topDate: DateFormatter = {
+            let formatter = DateFormatter()
+            formatter.locale = Locale(identifier: "zh_CN")
+            formatter.dateFormat = "yyyy-MM-dd"
+            return formatter
+        }()
+
+        static let iso8601: ISO8601DateFormatter = {
+            let formatter = ISO8601DateFormatter()
+            formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            return formatter
+        }()
+    }
+
+    private struct AnalysisOverlayState {
+        var visible = false
+        var title = "图片分析中"
+        var stage = "准备中..."
+        var current = 0
+        var total = 0
+        var successCount = 0
+        var failedCount = 0
+
+        var progressText: String {
+            guard total > 0 else { return "" }
+            return "第 \(max(current, 0)) / \(total) 张"
+        }
+    }
+
+    private struct PregnancyPanelDraft: Identifiable {
+        let id = UUID()
+        let sourceIndex: Int
+        let hcg: Double
+        let progesterone: Double
+        let estradiol: Double
+        var checkDate: Date?
+
+        var checkDateText: String {
+            guard let checkDate else { return "未识别日期" }
+            let formatter = DateFormatter()
+            formatter.locale = Locale(identifier: "zh_CN")
+            formatter.dateFormat = "yyyy-MM-dd"
+            return formatter.string(from: checkDate)
+        }
+    }
+
     let tabBarVisible: Bool
 
     @EnvironmentObject private var store: PregnancyStore
@@ -54,13 +143,18 @@ struct ChatHomeView: View {
     @Environment(\.scenePhase) private var scenePhase
 
     @State private var inputText = ""
+    @State private var previousInputTextForSubmit = ""
     @State private var chatMessages: [HomeChatMessage] = []
     @State private var pendingAction: AIPendingAction?
     @State private var showConfirm = false
     @State private var errorText = ""
     @State private var isTyping = false
     @State private var typingStageText = "小助手正在思考…"
-    @State private var isGreetingCollapsed = false
+    @State private var selectedHomeDate = Calendar.current.startOfDay(for: Date())
+    @State private var selectedGuideSnapshot: DailyGuideSnapshot?
+    @State private var showGuideDetailSheet = false
+    @State private var guideDetailKind: GuideDetailKind = .weekGuide
+    @State private var guideRequestToken = UUID()
     @State private var failedMessageID: String?
     @State private var failedUserInput: String?
     @State private var isRetryingFailedMessage = false
@@ -71,10 +165,17 @@ struct ChatHomeView: View {
     @State private var liveVoiceTranscript = ""
     @State private var activeVoiceSessionID: UUID?
     @State private var ocrProcessingState: OCRProcessingState = .idle
+    @State private var showImageFlowDialog = false
     @State private var showImageSourceDialog = false
     @State private var imageSource: ImageSource?
-    @State private var showQuickAddPregnancyPanel = false
+    @State private var showMultiImagePicker = false
+    @State private var activeImageFlowMode: HomeImageFlowMode = .genericOcrChat
+    @State private var analysisOverlay = AnalysisOverlayState()
+    @State private var pendingPregnancyPanelDrafts: [PregnancyPanelDraft] = []
+    @State private var pendingImageFailMessages: [String] = []
+    @State private var showPregnancyPanelDateReview = false
     @State private var composerDockHeight: CGFloat = 0
+    @State private var pendingScrollWorkItem: DispatchWorkItem?
     @FocusState private var inputFocused: Bool
     @StateObject private var speechInput = SpeechInputService()
 
@@ -121,9 +222,10 @@ struct ChatHomeView: View {
                         }
                     )
                     .simultaneousGesture(
-                        DragGesture(minimumDistance: 12).onEnded { value in
-                            guard value.translation.height < -16 else { return }
-                            collapseGreetingCard()
+                        DragGesture(minimumDistance: 10).onEnded { value in
+                            if value.translation.height < -16 {
+                                inputFocused = false
+                            }
                         }
                     )
                     .scrollIndicators(.hidden)
@@ -131,43 +233,49 @@ struct ChatHomeView: View {
                     .onAppear {
                         store.refreshForTodayIfNeeded()
                         initializeSessionIfNeeded()
-                        refreshDailyGreetingBanner()
+                        selectedHomeDate = Calendar.current.startOfDay(for: Date())
+                        refreshHomeHeader(for: selectedHomeDate)
                         triggerBackendWarmupIfNeeded()
-                        scrollToBottomStable(proxy)
+                        scrollToBottomStable(proxy, animated: false)
                     }
-                    .onChange(of: chatMessages.count) { _, _ in
+                    .onChange(of: chatMessages.count) { _ in
                         store.saveHomeChatMessages(chatMessages)
-                        scrollToBottomStable(proxy)
+                        scrollToBottomStable(proxy, animated: true)
                     }
-                    .onChange(of: isTyping) { _, _ in
-                        scrollToBottomStable(proxy)
+                    .onChange(of: isTyping) { _ in
+                        scrollToBottomStable(proxy, animated: true)
                     }
-                    .onChange(of: inputFocused) { _, focused in
-                        if focused {
-                            collapseGreetingCard()
-                        }
-                        scrollToBottomStable(proxy)
+                    .onChange(of: inputFocused) { _ in
+                        scrollToBottomStable(proxy, animated: false)
                     }
-                    .onChange(of: tabBarVisible) { _, _ in
-                        scrollToBottomStable(proxy)
+                    .onChange(of: tabBarVisible) { _ in
+                        scrollToBottomStable(proxy, animated: false)
                     }
-                    .onChange(of: composerDockHeight) { _, _ in
-                        scrollToBottomStable(proxy)
+                    .onChange(of: composerDockHeight) { _ in
+                        scrollToBottomStable(proxy, animated: false)
                     }
-                    .onChange(of: store.homeSummaryFingerprint()) { _, _ in
-                        refreshDailyGreetingBanner()
+                    .onChange(of: selectedHomeDate) { newDate in
+                        refreshHomeHeader(for: newDate)
                     }
-                    .onChange(of: store.resetEpoch) { _, _ in
+                    .onChange(of: store.homeSummaryFingerprint()) { _ in
+                        refreshHomeHeader(for: selectedHomeDate)
+                    }
+                    .onChange(of: store.resetEpoch) { _ in
                         clearLocalSessionState()
                         initializeSessionIfNeeded()
-                        refreshDailyGreetingBanner()
-                        scrollToBottomStable(proxy)
+                        selectedHomeDate = Calendar.current.startOfDay(for: Date())
+                        refreshHomeHeader(for: selectedHomeDate)
+                        scrollToBottomStable(proxy, animated: false)
                     }
-                    .onChange(of: scenePhase) { _, newPhase in
+                    .onChange(of: scenePhase) { newPhase in
                         guard newPhase == .active else { return }
-                        refreshDailyGreetingBanner()
-                        scrollToBottomStable(proxy)
+                        refreshHomeHeader(for: selectedHomeDate)
+                        scrollToBottomStable(proxy, animated: false)
                     }
+                }
+
+                if analysisOverlay.visible {
+                    analysisBlockingOverlay
                 }
             }
             .safeAreaInset(edge: .top, spacing: 0) {
@@ -195,6 +303,7 @@ struct ChatHomeView: View {
                         store.removePendingAction(id: pendingAction.id)
                         self.pendingAction = nil
                     }
+                    pendingPregnancyPanelDrafts = []
                 }
                 Button("确认") {
                     if let pendingAction {
@@ -202,13 +311,26 @@ struct ChatHomeView: View {
                         chatMessages.append(HomeChatMessage(role: .assistant, kind: .text, text: result))
                         self.pendingAction = nil
                         store.removePendingAction(id: pendingAction.id)
-                        refreshDailyGreetingBanner()
+                        pendingPregnancyPanelDrafts = []
+                        refreshHomeHeader(for: selectedHomeDate)
                     }
                 }
             } message: {
                 Text(pendingSummary())
             }
-            .confirmationDialog("上传检查报告", isPresented: $showImageSourceDialog, titleVisibility: .visible) {
+            .confirmationDialog("图片操作", isPresented: $showImageFlowDialog, titleVisibility: .visible) {
+                Button("记录报告单") {
+                    beginImageFlow(.reportImport)
+                }
+                Button("成分识别") {
+                    beginImageFlow(.ingredientScan)
+                }
+                Button("通用识图问答") {
+                    beginImageFlow(.genericOcrChat)
+                }
+                Button("取消", role: .cancel) { }
+            }
+            .confirmationDialog("选择图片来源", isPresented: $showImageSourceDialog, titleVisibility: .visible) {
                 Button("拍照") {
                     guard UIImagePickerController.isSourceTypeAvailable(.camera) else {
                         errorText = "当前设备不支持拍照，请改用相册上传。"
@@ -217,27 +339,41 @@ struct ChatHomeView: View {
                     imageSource = .camera
                 }
                 Button("从相册选择") {
-                    imageSource = .library
+                    showMultiImagePicker = true
                 }
                 Button("取消", role: .cancel) { }
             }
             .sheet(item: $imageSource) { source in
                 AppImagePicker(sourceType: source.sourceType) { image in
+                    let mode = activeImageFlowMode
                     Task {
-                        await processPickedImage(image)
+                        await processPickedImages([image], mode: mode)
                     }
                 }
             }
-            .sheet(isPresented: $showQuickAddPregnancyPanel) {
-                RecordAddView(initialTab: .check, initialCheckType: .pregnancyPanel)
-                    .environmentObject(store)
+            .sheet(isPresented: $showMultiImagePicker) {
+                ChatMultiImagePicker(selectionLimit: 0) { images in
+                    let mode = activeImageFlowMode
+                    Task {
+                        await processPickedImages(images, mode: mode)
+                    }
+                }
+            }
+            .sheet(isPresented: $showPregnancyPanelDateReview) {
+                pregnancyPanelDateReviewSheet
+            }
+            .sheet(isPresented: $showGuideDetailSheet) {
+                guideDetailSheet
+                    .presentationDetents([.medium, .large])
+                    .presentationDragIndicator(.visible)
             }
             .onDisappear {
                 resetVoiceState(stopRecognition: true)
                 store.saveHomeChatMessages(chatMessages)
             }
-            .onChange(of: inputText) { oldValue, newValue in
-                handlePotentialKeyboardSend(previous: oldValue, current: newValue)
+            .onChange(of: inputText) { newValue in
+                handlePotentialKeyboardSend(previous: previousInputTextForSubmit, current: newValue)
+                previousInputTextForSubmit = newValue
             }
         }
     }
@@ -250,7 +386,7 @@ struct ChatHomeView: View {
                         let assistantText = message.text.isEmpty ? "我在呢，你继续说。" : message.text
                         AssistantBubble {
                             Text(assistantText)
-                                .font(.system(size: 16))
+                                .font(.subheadline)
                                 .foregroundStyle(AppTheme.textPrimary)
                                 .textSelection(.enabled)
                                 .contextMenu {
@@ -260,14 +396,14 @@ struct ChatHomeView: View {
                                 }
                         }
                         Text(timeLabel(message.createdAt))
-                            .font(.system(size: 11))
+                            .font(.caption2)
                             .foregroundStyle(AppTheme.textHint.opacity(0.7))
                             .padding(.leading, 38)
                     } else {
                         UserBubble {
                             Text(message.text)
-                                .font(.system(size: 16))
-                                .foregroundStyle(AppTheme.textPrimary)
+                                .font(.subheadline)
+                                .foregroundStyle(.white)
                                 .textSelection(.enabled)
                                 .contextMenu {
                                     Button("复制") {
@@ -278,7 +414,7 @@ struct ChatHomeView: View {
                         if message.deliveryStatus == .failed {
                             HStack(spacing: 8) {
                                 Text(message.deliveryError ?? "发送失败")
-                                    .font(.system(size: 11))
+                                    .font(.caption2)
                                     .foregroundStyle(AppTheme.bannerError)
                                 Button {
                                     Task {
@@ -286,7 +422,7 @@ struct ChatHomeView: View {
                                     }
                                 } label: {
                                     Text((isRetryingFailedMessage && failedMessageID == message.id) ? "重试中..." : "重试发送")
-                                        .font(.system(size: 11, weight: .semibold))
+                                        .font(.caption2.weight(.semibold))
                                 }
                                 .buttonStyle(.plain)
                                 .disabled(isTyping || (isRetryingFailedMessage && failedMessageID == message.id))
@@ -294,7 +430,7 @@ struct ChatHomeView: View {
                             .frame(maxWidth: .infinity, alignment: .trailing)
                         }
                         Text(timeLabel(message.createdAt))
-                            .font(.system(size: 11))
+                            .font(.caption2)
                             .foregroundStyle(AppTheme.textHint)
                             .frame(maxWidth: .infinity, alignment: .trailing)
                     }
@@ -307,7 +443,7 @@ struct ChatHomeView: View {
                         ProgressView()
                             .controlSize(.small)
                         Text(typingStageText)
-                            .font(.system(size: 14))
+                            .font(.caption)
                             .foregroundStyle(AppTheme.textSecondary)
                     }
                 }
@@ -319,97 +455,126 @@ struct ChatHomeView: View {
         UIPasteboard.general.string = text
     }
 
+    private var selectedGuide: DailyGuideSnapshot {
+        selectedGuideSnapshot ?? store.dailyGuideSnapshot(for: selectedHomeDate)
+    }
+
     private var topFixedInfoBar: some View {
-        let snapshot = store.homeGreetingCardSnapshot()
-        let overdueLine = store.formatOverdueLine(
-            items: snapshot.overdueItems,
-            pendingMedicalCount: snapshot.pendingMedicalCount
-        )
-        let todayExtraLine = store.formatTodayExtraLine(items: snapshot.todayExtraItems)
-        let tomorrowLine = snapshot.showTomorrowHint
-            ? store.formatTomorrowHintLine(items: snapshot.tomorrowItems)
-            : nil
+        let guide = selectedGuide
+        let weight = store.weeklyWeightSummary(for: selectedHomeDate)
+        let medicalItems = store.todayTimelineItems(scope: .medical, includeCompleted: true, now: selectedHomeDate)
+        let pendingCount = medicalItems.filter { !$0.isCompleted }.count
+        let topDateTitle = "孕\(store.gestationalWeekText(for: selectedHomeDate)) · \(store.homeDisplayDateText(for: selectedHomeDate))"
+        let dueDateText = "预产期：\(store.formatDate(store.dueDate))（\(store.daysToDueText(on: selectedHomeDate))）"
 
         return VStack(alignment: .leading, spacing: 8) {
             Text("孕期健康伙伴")
-                .font(.system(size: 24, weight: .bold))
+                .font(.system(size: 22, weight: .bold))
                 .foregroundStyle(AppTheme.textPrimary)
 
-            HStack(spacing: 8) {
-                BadgePill(text: "孕 \(store.gestationalWeekText)")
-                BadgePill(text: "预产期 \(store.formatDate(store.dueDate))")
-                Spacer()
-            }
-
-            VStack(alignment: .leading, spacing: isGreetingCollapsed ? 0 : 8) {
-                if isGreetingCollapsed {
-                    HStack(spacing: 8) {
-                        Text(collapsedGreetingLine(snapshot: snapshot))
-                            .font(.footnote.weight(.medium))
-                            .foregroundStyle(AppTheme.textPrimary)
-                            .lineLimit(1)
-                            .truncationMode(.tail)
-                        Spacer(minLength: 0)
-                        Button {
-                            expandGreetingCard()
-                        } label: {
-                            Image(systemName: "chevron.down")
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(AppTheme.textSecondary)
-                                .frame(width: 24, height: 24)
-                        }
-                        .buttonStyle(.plain)
-                        .appTapTarget()
-                        .accessibilityLabel("展开问候卡片")
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 6) {
+                    Button {
+                        shiftSelectedHomeDate(by: -1)
+                    } label: {
+                        Image(systemName: "chevron.left")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(AppTheme.actionPrimary)
+                            .frame(width: 30, height: 30)
+                            .background(Color.white.opacity(0.6))
+                            .clipShape(Circle())
                     }
-                } else {
-                    Text(snapshot.warmGreeting)
-                        .font(.footnote.weight(.medium))
+                    .buttonStyle(.plain)
+                    .appTapTarget()
+
+                    Text(topDateTitle)
+                        .font(.subheadline.weight(.semibold))
                         .foregroundStyle(AppTheme.textPrimary)
-                        .multilineTextAlignment(.leading)
-                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .center)
+                        .lineLimit(1)
 
-                    if let overdueLine {
-                        Text(overdueLine)
-                            .font(.footnote)
-                            .foregroundStyle(AppTheme.textSecondary)
-                            .fixedSize(horizontal: false, vertical: true)
+                    Button {
+                        shiftSelectedHomeDate(by: 1)
+                    } label: {
+                        Image(systemName: "chevron.right")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(AppTheme.actionPrimary)
+                            .frame(width: 30, height: 30)
+                            .background(Color.white.opacity(0.6))
+                            .clipShape(Circle())
                     }
-
-                    if let todayExtraLine {
-                        Text(todayExtraLine)
-                            .font(.footnote)
-                            .foregroundStyle(AppTheme.textSecondary)
-                            .fixedSize(horizontal: false, vertical: true)
+                    .buttonStyle(.plain)
+                    .appTapTarget()
+                }
+                .contentShape(Rectangle())
+                .gesture(
+                    DragGesture(minimumDistance: 15).onEnded { value in
+                        if value.translation.width < -26 {
+                            shiftSelectedHomeDate(by: 1)
+                        } else if value.translation.width > 26 {
+                            shiftSelectedHomeDate(by: -1)
+                        }
                     }
+                )
 
-                    if let tomorrowLine {
-                        Text(tomorrowLine)
-                            .font(.footnote)
-                            .foregroundStyle(AppTheme.textSecondary)
-                            .fixedSize(horizontal: false, vertical: true)
+                Text(dueDateText)
+                    .font(.footnote)
+                    .foregroundStyle(AppTheme.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(weight.title)
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(AppTheme.textPrimary)
+                    Text(weight.detail)
+                        .font(.caption)
+                        .foregroundStyle(AppTheme.textSecondary)
+                }
+
+                VStack(alignment: .leading, spacing: 8) {
+                    guideSummaryRow(icon: "book.fill", title: "孕期指南", text: guide.weekGuide) {
+                        guideDetailKind = .weekGuide
+                        showGuideDetailSheet = true
+                    }
+                    guideSummaryRow(icon: "figure.and.child.holdinghands", title: "宝宝变化", text: guide.babyChange) {
+                        guideDetailKind = .babyChange
+                        showGuideDetailSheet = true
+                    }
+                    guideSummaryRow(icon: "figure.walk", title: "妈妈变化", text: guide.momChange) {
+                        guideDetailKind = .momChange
+                        showGuideDetailSheet = true
                     }
                 }
+
+                Text("当日医疗待办：\(pendingCount) 项")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(AppTheme.textSecondary)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 9)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 12)
             .background(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(AppTheme.card)
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(
+                        LinearGradient(
+                            colors: [
+                                Color(hex: "FFE8F2"),
+                                Color(hex: "FFD8E9"),
+                                Color(hex: "FFCFE1")
+                            ],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
             )
             .overlay(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .stroke(AppTheme.borderLight, lineWidth: 1)
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .stroke(Color.white.opacity(0.7), lineWidth: 1)
             )
         }
         .padding(.horizontal)
         .padding(.top, 6)
         .padding(.bottom, 10)
-        .background(
-            AppTheme.background
-                .opacity(0.98)
-        )
+        .background(AppTheme.background.opacity(0.98))
         .overlay(alignment: .bottom) {
             Rectangle()
                 .fill(AppTheme.borderLight)
@@ -417,35 +582,190 @@ struct ChatHomeView: View {
         }
     }
 
-    private func collapsedGreetingLine(snapshot: HomeGreetingCardSnapshot) -> String {
-        var greeting = snapshot.warmGreeting.trimmingCharacters(in: .whitespacesAndNewlines)
-        if greeting.hasSuffix("。") {
-            greeting.removeLast()
+    private var guideDetailSheet: some View {
+        let guide = selectedGuide
+        let title = guideDetailKind.title
+        let content: String
+        switch guideDetailKind {
+        case .weekGuide:
+            content = guide.weekGuide
+        case .babyChange:
+            content = guide.babyChange
+        case .momChange:
+            content = guide.momChange
         }
-        var parts = [greeting]
-        if snapshot.pendingMedicalCount == 0 {
-            parts.append("今日已完成")
-        } else {
-            parts.append("未完成\(snapshot.pendingMedicalCount)项")
+
+        return NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text(store.homeDisplayDateText(for: selectedHomeDate))
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(AppTheme.textHint)
+
+                    Text(content)
+                        .font(.body)
+                        .foregroundStyle(AppTheme.textPrimary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 16)
+            }
+            .navigationTitle(title)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("关闭") {
+                        showGuideDetailSheet = false
+                    }
+                }
+            }
         }
-        if snapshot.showTomorrowHint {
-            parts.append("明天\(snapshot.tomorrowItems.count)项安排")
-        }
-        return parts.joined(separator: " · ")
     }
 
-    private func collapseGreetingCard() {
-        guard !isGreetingCollapsed else { return }
-        withAnimation(.easeInOut(duration: 0.2)) {
-            isGreetingCollapsed = true
+    private func guideSummaryRow(icon: String, title: String, text: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(alignment: .top, spacing: 8) {
+                Image(systemName: icon)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(AppTheme.actionPrimary)
+                    .frame(width: 18, height: 18)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(AppTheme.textSecondary)
+                    Text(text)
+                        .font(.footnote)
+                        .foregroundStyle(AppTheme.textPrimary)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 0)
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(AppTheme.textHint)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .background(Color.white.opacity(0.55))
+            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         }
+        .buttonStyle(.plain)
+        .appTapTarget()
     }
 
-    private func expandGreetingCard() {
-        guard isGreetingCollapsed else { return }
-        withAnimation(.easeInOut(duration: 0.2)) {
-            isGreetingCollapsed = false
+    private var analysisBlockingOverlay: some View {
+        ZStack {
+            Color.black.opacity(0.28)
+                .ignoresSafeArea()
+            VStack(spacing: 10) {
+                ProgressView()
+                    .controlSize(.regular)
+                Text(analysisOverlay.title)
+                    .font(.headline)
+                    .foregroundStyle(AppTheme.textPrimary)
+                Text(analysisOverlay.stage)
+                    .font(.footnote)
+                    .foregroundStyle(AppTheme.textSecondary)
+                    .multilineTextAlignment(.center)
+                if !analysisOverlay.progressText.isEmpty {
+                    Text(analysisOverlay.progressText)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(AppTheme.textHint)
+                }
+                if analysisOverlay.successCount > 0 || analysisOverlay.failedCount > 0 {
+                    Text("成功 \(analysisOverlay.successCount) 张 · 失败 \(analysisOverlay.failedCount) 张")
+                        .font(.caption)
+                        .foregroundStyle(AppTheme.textSecondary)
+                }
+            }
+            .padding(.horizontal, 24)
+            .padding(.vertical, 20)
+            .background(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(Color.white)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .stroke(AppTheme.borderLight, lineWidth: 1)
+            )
+            .shadow(color: Color.black.opacity(0.12), radius: 14, x: 0, y: 6)
+            .padding(.horizontal, 24)
         }
+        .transition(.opacity)
+        .zIndex(999)
+    }
+
+    private func shiftSelectedHomeDate(by days: Int) {
+        guard let shifted = Calendar.current.date(byAdding: .day, value: days, to: selectedHomeDate) else {
+            return
+        }
+        selectedHomeDate = Calendar.current.startOfDay(for: shifted)
+    }
+
+    private var hasMissingDraftDate: Bool {
+        pendingPregnancyPanelDrafts.contains { $0.checkDate == nil }
+    }
+
+    private var pregnancyPanelDateReviewSheet: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("有部分报告未识别到日期，请先补全日期再保存。")
+                        .font(.footnote)
+                        .foregroundStyle(AppTheme.textSecondary)
+
+                    ForEach(Array(pendingPregnancyPanelDrafts.enumerated()), id: \.element.id) { index, draft in
+                        AppCard {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text("第\(draft.sourceIndex)张报告")
+                                    .font(.subheadline.weight(.semibold))
+                                    .foregroundStyle(AppTheme.textPrimary)
+
+                                Text("HCG \(formatLabValue(draft.hcg)) · 孕酮 \(formatLabValue(draft.progesterone)) · E2 \(formatLabValue(draft.estradiol))")
+                                    .font(.footnote)
+                                    .foregroundStyle(AppTheme.textSecondary)
+
+                                if draft.checkDate == nil {
+                                    AppDateField(
+                                        "报告日期",
+                                        selection: Binding(
+                                            get: { pendingPregnancyPanelDrafts[index].checkDate ?? Date() },
+                                            set: { pendingPregnancyPanelDrafts[index].checkDate = $0 }
+                                        ),
+                                        titleWidth: 72,
+                                        displayFormat: "yyyy年M月d日"
+                                    )
+                                } else if let checkDate = draft.checkDate {
+                                    Text("报告日期：\(isoDateText(checkDate))")
+                                        .font(.footnote)
+                                        .foregroundStyle(AppTheme.textSecondary)
+                                }
+                            }
+                        }
+                    }
+                }
+                .padding(.horizontal, 16)
+                .padding(.top, 12)
+                .padding(.bottom, 20)
+            }
+            .navigationTitle("导入前校对")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("取消") {
+                        showPregnancyPanelDateReview = false
+                    }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("继续保存") {
+                        queuePregnancyPanelDraftsForConfirmation()
+                    }
+                    .disabled(hasMissingDraftDate)
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
     }
 
     private var composerDock: some View {
@@ -478,7 +798,7 @@ struct ChatHomeView: View {
             // 状态提示
             if isRecordingVoice {
                 Text(voicePressState == .canceling ? "松开取消" : "松开发送")
-                    .font(.system(size: 13, weight: .medium))
+                    .font(.footnote.weight(.medium))
                     .foregroundStyle(voicePressState == .canceling ? AppTheme.statusError : AppTheme.statusInfo)
                     .padding(.horizontal, 16)
                     .padding(.bottom, 8)
@@ -489,7 +809,7 @@ struct ChatHomeView: View {
                     ProgressView()
                         .controlSize(.small)
                     Text("图片识别中...")
-                        .font(.system(size: 13))
+                        .font(.footnote)
                         .foregroundStyle(AppTheme.textSecondary)
                 }
                 .padding(.horizontal, 16)
@@ -499,10 +819,10 @@ struct ChatHomeView: View {
             if !errorText.isEmpty {
                 HStack(spacing: 8) {
                     Image(systemName: "exclamationmark.circle.fill")
-                        .font(.system(size: 12))
+                        .font(.caption)
                         .foregroundStyle(AppTheme.statusError)
                     Text(errorText)
-                        .font(.system(size: 13))
+                        .font(.footnote)
                         .foregroundStyle(AppTheme.statusError)
                         .lineLimit(2)
                 }
@@ -539,7 +859,7 @@ struct ChatHomeView: View {
 
     private var imageUploadButton: some View {
         Button {
-            showImageSourceDialog = true
+            showImageFlowDialog = true
         } label: {
             Image(systemName: "photo")
                 .font(.system(size: 18, weight: .medium))
@@ -588,11 +908,10 @@ struct ChatHomeView: View {
         TextField("", text: $inputText, axis: .vertical)
             .placeholder(when: inputText.isEmpty) {
                 Text("说点什么...")
-                    .font(.system(size: 16))
                     .foregroundStyle(AppTheme.textHint)
             }
             .lineLimit(1...4)
-            .font(.system(size: 16))
+            .font(.system(size: 15))
             .foregroundStyle(AppTheme.textPrimary)
             .tint(AppTheme.actionPrimary)
             .padding(.horizontal, 12)
@@ -620,10 +939,10 @@ struct ChatHomeView: View {
 
         return HStack(spacing: 8) {
             Image(systemName: voiceButtonSymbol)
-                .font(.system(size: 16, weight: .semibold))
+                .font(.system(size: 15, weight: .semibold))
                 .foregroundStyle(voiceButtonForegroundColor)
             Text(voiceActionText)
-                .font(.system(size: 16, weight: .medium))
+                .font(.system(size: 15, weight: .medium))
                 .foregroundStyle(voicePressState == .canceling ? AppTheme.statusError : AppTheme.textSecondary)
             Spacer(minLength: 0)
         }
@@ -730,6 +1049,7 @@ struct ChatHomeView: View {
     private func clearLocalSessionState() {
         resetVoiceState(stopRecognition: true)
         inputText = ""
+        previousInputTextForSubmit = ""
         chatMessages = []
         pendingAction = nil
         showConfirm = false
@@ -740,13 +1060,66 @@ struct ChatHomeView: View {
         failedUserInput = nil
         isRetryingFailedMessage = false
         ocrProcessingState = .idle
+        showImageFlowDialog = false
         showImageSourceDialog = false
         imageSource = nil
-        isGreetingCollapsed = false
+        showMultiImagePicker = false
+        activeImageFlowMode = .genericOcrChat
+        analysisOverlay = AnalysisOverlayState()
+        pendingPregnancyPanelDrafts = []
+        pendingImageFailMessages = []
+        showPregnancyPanelDateReview = false
+        showGuideDetailSheet = false
+        selectedGuideSnapshot = nil
+        guideRequestToken = UUID()
+        pendingScrollWorkItem?.cancel()
+        pendingScrollWorkItem = nil
     }
 
-    private func refreshDailyGreetingBanner(now: Date = Date()) {
-        _ = store.takeDailyGreetingIfNeeded(now: now)
+    private func refreshHomeHeader(for date: Date) {
+        selectedGuideSnapshot = store.dailyGuideSnapshot(for: date)
+        let token = UUID()
+        guideRequestToken = token
+        Task {
+            await requestDailyGuideIfPossible(for: date, token: token)
+        }
+    }
+
+    private func requestDailyGuideIfPossible(for date: Date, token: UUID) async {
+        let config = store.currentAIConfig()
+        guard !config.baseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return
+        }
+
+        let dateKey = store.dateKey(for: date)
+        do {
+            let response = try await chatService.sendDailyGuide(
+                config: config,
+                date: dateKey,
+                gestationalText: store.gestationalWeekText(for: date),
+                profileContext: store.aiContextSummary(for: date)
+            )
+            let snapshot = DailyGuideSnapshot(
+                dateKey: response.date_key?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+                    ? (response.date_key ?? dateKey)
+                    : dateKey,
+                weekGuide: response.week_guide.trimmingCharacters(in: .whitespacesAndNewlines),
+                babyChange: response.baby_change.trimmingCharacters(in: .whitespacesAndNewlines),
+                momChange: response.mom_change.trimmingCharacters(in: .whitespacesAndNewlines),
+                source: (response.source ?? "").lowercased() == "ai" ? .ai : .local,
+                updatedAt: Date()
+            )
+
+            await MainActor.run {
+                guard token == guideRequestToken else { return }
+                store.saveDailyGuideSnapshot(snapshot)
+                if store.dateKey(for: selectedHomeDate) == snapshot.dateKey {
+                    selectedGuideSnapshot = snapshot
+                }
+            }
+        } catch {
+            // 使用本地模板兜底，不打断首页主流程。
+        }
     }
 
     private func restorePendingActionIfNeeded() {
@@ -826,15 +1199,37 @@ struct ChatHomeView: View {
         let prompt = command.prompt.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !prompt.isEmpty else { return }
 
-        if command.title.contains("记录妊娠三项") {
+        if command.title == "成分识别" {
             inputFocused = false
-            showQuickAddPregnancyPanel = true
+            beginImageFlow(.ingredientScan)
+            return
+        }
+
+        if command.title == "今日安排" {
+            let dateText = store.homeDisplayDateText(for: selectedHomeDate)
+            let customPrompt = "请汇总我\(dateText)需要注意的安排：用药、打针、回诊和其他提醒。"
+            Task {
+                await submitUserInput(customPrompt)
+            }
+            return
+        }
+
+        if command.title == "记录报告单" {
+            let guidePrompt = "我想记录报告单，请引导我上传检查报告图片或手动填写。"
+            Task {
+                await submitUserInput(guidePrompt)
+            }
             return
         }
 
         Task {
             await submitUserInput(prompt)
         }
+    }
+
+    private func beginImageFlow(_ mode: HomeImageFlowMode) {
+        activeImageFlowMode = mode
+        showImageSourceDialog = true
     }
 
     private func beginPressToTalk() {
@@ -910,20 +1305,472 @@ struct ChatHomeView: View {
         liveVoiceTranscript = ""
     }
 
-    private func processPickedImage(_ image: UIImage) async {
+    private func processPickedImages(_ images: [UIImage], mode: HomeImageFlowMode) async {
         guard !isTyping else { return }
+        let validImages = images
+        guard !validImages.isEmpty else { return }
+
         errorText = ""
+        pendingImageFailMessages = []
         ocrProcessingState = .processing
-        do {
-            let recognized = try await ImageOCRService.recognizeText(from: image)
-            ocrProcessingState = .idle
-            let prompt = "以下是我上传图片识别出的文本，请帮我整理关键提醒并给出下一步建议：\n\(recognized)"
-            await submitUserInput(prompt)
-        } catch {
-            let message = (error as? LocalizedError)?.errorDescription ?? "图片识别失败，请稍后重试。"
-            ocrProcessingState = .failed(message)
-            errorText = message
+
+        switch mode {
+        case .reportImport:
+            await processReportImportImages(validImages)
+        case .ingredientScan:
+            await processIngredientImages(validImages)
+        case .genericOcrChat:
+            await processGenericOCRImages(validImages)
         }
+
+        if case .processing = ocrProcessingState {
+            ocrProcessingState = .idle
+        }
+    }
+
+    private func processReportImportImages(_ images: [UIImage]) async {
+        showAnalysisOverlay(title: "报告分析中", stage: "OCR识别中", current: 0, total: images.count)
+
+        var recognizedTexts: [String] = []
+        var sourceIndexes: [Int] = []
+        var failedMessages: [String] = []
+
+        for (index, image) in images.enumerated() {
+            updateAnalysisOverlay(stage: "OCR识别中", current: index + 1, total: images.count)
+            do {
+                let recognized = try await ImageOCRService.recognizeText(from: image)
+                let trimmed = recognized.trimmingCharacters(in: .whitespacesAndNewlines)
+                if trimmed.isEmpty {
+                    failedMessages.append("第\(index + 1)张：OCR 未识别到有效文本")
+                    continue
+                }
+                recognizedTexts.append(trimmed)
+                sourceIndexes.append(index + 1)
+                analysisOverlay.successCount += 1
+            } catch {
+                let message = (error as? LocalizedError)?.errorDescription ?? "识别失败"
+                failedMessages.append("第\(index + 1)张：\(message)")
+                analysisOverlay.failedCount += 1
+            }
+        }
+
+        guard !recognizedTexts.isEmpty else {
+            hideAnalysisOverlay()
+            ocrProcessingState = .failed("未识别到可保存的检查报告，请重试。")
+            errorText = failedMessages.joined(separator: "；")
+            return
+        }
+
+        updateAnalysisOverlay(stage: "结构化提取中", current: recognizedTexts.count, total: recognizedTexts.count)
+
+        do {
+            let config = store.currentAIConfig()
+            guard !config.baseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                hideAnalysisOverlay()
+                ocrProcessingState = .failed("AI 服务未配置")
+                errorText = "AI 服务未配置，请先配置后端地址。"
+                return
+            }
+
+            let grouped = try await chatService.groupPregnancyPanelReports(
+                config: config,
+                ocrTexts: recognizedTexts,
+                nowISO8601: Self.Formatters.iso8601.string(from: Date())
+            )
+            updateAnalysisOverlay(stage: "分组判定中", current: recognizedTexts.count, total: recognizedTexts.count)
+
+            let drafts = grouped.records.enumerated().map { offset, record in
+                let sourceLabel: Int
+                if let first = record.source_indexes?.first, first >= 0, first < sourceIndexes.count {
+                    sourceLabel = sourceIndexes[first]
+                } else if offset < sourceIndexes.count {
+                    sourceLabel = sourceIndexes[offset]
+                } else {
+                    sourceLabel = offset + 1
+                }
+                return PregnancyPanelDraft(
+                    sourceIndex: sourceLabel,
+                    hcg: record.hcg,
+                    progesterone: record.progesterone,
+                    estradiol: record.estradiol,
+                    checkDate: parseOCRDate(record.check_date)
+                )
+            }
+
+            grouped.failed_indexes.forEach { failedIdx in
+                let display: Int
+                if failedIdx >= 0, failedIdx < sourceIndexes.count {
+                    display = sourceIndexes[failedIdx]
+                } else {
+                    display = min(max(failedIdx + 1, 1), images.count)
+                }
+                failedMessages.append("第\(display)张：未提取到完整妊娠三项")
+            }
+
+            hideAnalysisOverlay()
+
+            guard !drafts.isEmpty else {
+                ocrProcessingState = .failed("未识别到可保存的妊娠三项报告。")
+                errorText = failedMessages.isEmpty ? "未识别到可保存的妊娠三项报告。" : failedMessages.joined(separator: "；")
+                return
+            }
+
+            pendingPregnancyPanelDrafts = drafts
+            pendingImageFailMessages = failedMessages
+            if drafts.contains(where: { $0.checkDate == nil }) {
+                showPregnancyPanelDateReview = true
+            } else {
+                queuePregnancyPanelDraftsForConfirmation()
+            }
+            if !failedMessages.isEmpty {
+                errorText = "已识别 \(drafts.count) 条，\(failedMessages.count) 张失败。"
+            }
+        } catch {
+            hideAnalysisOverlay()
+            let mapped = AIRequestError.map(error)
+            ocrProcessingState = .failed(mapped.userMessage)
+            errorText = mapped.userMessage
+        }
+    }
+
+    private func processIngredientImages(_ images: [UIImage]) async {
+        showAnalysisOverlay(title: "成分识别中", stage: "OCR识别中", current: 0, total: images.count)
+
+        var recognizedTexts: [String] = []
+        var failedMessages: [String] = []
+
+        for (index, image) in images.enumerated() {
+            updateAnalysisOverlay(stage: "OCR识别中", current: index + 1, total: images.count)
+            do {
+                let recognized = try await ImageOCRService.recognizeText(from: image)
+                let trimmed = recognized.trimmingCharacters(in: .whitespacesAndNewlines)
+                if trimmed.isEmpty {
+                    failedMessages.append("第\(index + 1)张：OCR 未识别到有效文本")
+                    continue
+                }
+                recognizedTexts.append(trimmed)
+                analysisOverlay.successCount += 1
+            } catch {
+                let message = (error as? LocalizedError)?.errorDescription ?? "识别失败"
+                failedMessages.append("第\(index + 1)张：\(message)")
+                analysisOverlay.failedCount += 1
+            }
+        }
+
+        guard !recognizedTexts.isEmpty else {
+            hideAnalysisOverlay()
+            ocrProcessingState = .failed("未识别到可分析的成分文本。")
+            errorText = failedMessages.joined(separator: "；")
+            return
+        }
+
+        updateAnalysisOverlay(stage: "风险分级中", current: recognizedTexts.count, total: recognizedTexts.count)
+
+        do {
+            let config = store.currentAIConfig()
+            guard !config.baseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                hideAnalysisOverlay()
+                ocrProcessingState = .failed("AI 服务未配置")
+                errorText = "AI 服务未配置，请先配置后端地址。"
+                return
+            }
+
+            let result = try await chatService.analyzeIngredients(
+                config: config,
+                ocrTexts: recognizedTexts,
+                profileContext: store.aiContextSummary(for: selectedHomeDate)
+            )
+            hideAnalysisOverlay()
+            let text = ingredientResultText(result)
+            chatMessages.append(HomeChatMessage(role: .assistant, kind: .text, text: text))
+            if !failedMessages.isEmpty {
+                errorText = "已识别 \(recognizedTexts.count) 张，\(failedMessages.count) 张失败。"
+            }
+        } catch {
+            hideAnalysisOverlay()
+            let mapped = AIRequestError.map(error)
+            ocrProcessingState = .failed(mapped.userMessage)
+            errorText = mapped.userMessage
+        }
+    }
+
+    private func processGenericOCRImages(_ images: [UIImage]) async {
+        showAnalysisOverlay(title: "识图处理中", stage: "OCR识别中", current: 0, total: images.count)
+        var recognizedTexts: [String] = []
+        var failedMessages: [String] = []
+
+        for (index, image) in images.enumerated() {
+            updateAnalysisOverlay(stage: "OCR识别中", current: index + 1, total: images.count)
+            do {
+                let recognized = try await ImageOCRService.recognizeText(from: image)
+                let trimmed = recognized.trimmingCharacters(in: .whitespacesAndNewlines)
+                if trimmed.isEmpty {
+                    failedMessages.append("第\(index + 1)张：OCR 未识别到有效文本")
+                    continue
+                }
+                recognizedTexts.append(trimmed)
+                analysisOverlay.successCount += 1
+            } catch {
+                let message = (error as? LocalizedError)?.errorDescription ?? "识别失败"
+                failedMessages.append("第\(index + 1)张：\(message)")
+                analysisOverlay.failedCount += 1
+            }
+        }
+
+        hideAnalysisOverlay()
+
+        guard !recognizedTexts.isEmpty else {
+            ocrProcessingState = .failed("未识别到有效文本，请重试。")
+            errorText = failedMessages.joined(separator: "；")
+            return
+        }
+
+        let userQuestion = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !userQuestion.isEmpty {
+            inputText = ""
+        }
+        let ocrPayload = recognizedTexts.enumerated().map { index, text in
+            "图片\(index + 1)：\n\(text)"
+        }.joined(separator: "\n\n")
+        let promptPrefix = userQuestion.isEmpty ? "请根据我上传的图片内容进行解读：" : "\(userQuestion)\n请结合以下图片识别文本回答："
+        let prompt = "\(promptPrefix)\n\n\(ocrPayload)"
+
+        await submitUserInput(prompt)
+        if !failedMessages.isEmpty {
+            errorText = "已识别 \(recognizedTexts.count) 张，\(failedMessages.count) 张失败。"
+        }
+    }
+
+    private func showAnalysisOverlay(title: String, stage: String, current: Int, total: Int) {
+        analysisOverlay.visible = true
+        analysisOverlay.title = title
+        analysisOverlay.stage = stage
+        analysisOverlay.current = current
+        analysisOverlay.total = total
+        analysisOverlay.successCount = 0
+        analysisOverlay.failedCount = 0
+    }
+
+    private func updateAnalysisOverlay(stage: String, current: Int, total: Int) {
+        analysisOverlay.stage = stage
+        analysisOverlay.current = current
+        analysisOverlay.total = total
+    }
+
+    private func hideAnalysisOverlay() {
+        analysisOverlay.visible = false
+    }
+
+    private func ingredientResultText(_ result: AIBackendChatService.IngredientAnalyzeResponse) -> String {
+        var lines: [String] = []
+        lines.append("成分识别结论：\(result.overall)")
+        if !result.summary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            lines.append(result.summary)
+        }
+
+        func section(_ title: String, _ items: [AIBackendChatService.IngredientEvidenceItem]) {
+            guard !items.isEmpty else { return }
+            lines.append("\(title)：")
+            for item in items.prefix(5) {
+                let reason = item.reason.trimmingCharacters(in: .whitespacesAndNewlines)
+                if reason.isEmpty {
+                    lines.append("• \(item.name)")
+                } else {
+                    lines.append("• \(item.name)：\(reason)")
+                }
+            }
+        }
+
+        section("可用", result.usable)
+        section("谨慎", result.caution)
+        section("避免", result.avoid)
+
+        if !result.alternatives.isEmpty {
+            lines.append("可替代建议：\(result.alternatives.prefix(3).joined(separator: "；"))")
+        }
+
+        let disclaimer = result.disclaimer.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !disclaimer.isEmpty {
+            lines.append(disclaimer)
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    private func queuePregnancyPanelDraftsForConfirmation() {
+        guard !pendingPregnancyPanelDrafts.isEmpty else { return }
+        let readyDrafts = pendingPregnancyPanelDrafts.filter { $0.checkDate != nil }
+        guard !readyDrafts.isEmpty else {
+            errorText = "仍有报告未补全日期，请先完成校对。"
+            return
+        }
+
+        let records: [[String: String]] = readyDrafts.compactMap { draft in
+            guard let checkDate = draft.checkDate else { return nil }
+            return [
+                "check_type": "pregnancy_panel",
+                "hcg": String(draft.hcg),
+                "progesterone": String(draft.progesterone),
+                "estradiol": String(draft.estradiol),
+                "check_date": isoDateText(checkDate)
+            ]
+        }
+        guard !records.isEmpty else {
+            errorText = "未生成可保存的检查记录。"
+            return
+        }
+
+        guard let data = try? JSONSerialization.data(withJSONObject: records, options: []),
+              let payload = String(data: data, encoding: .utf8) else {
+            errorText = "组装检查记录失败，请重试。"
+            return
+        }
+
+        let pending = AIPendingAction(
+            id: UUID().uuidString,
+            intent: "create_check_record",
+            slots: ["check_records": payload],
+            createdAt: Date()
+        )
+        pendingAction = pending
+        showConfirm = true
+        store.appendPendingAction(pending)
+        showPregnancyPanelDateReview = false
+    }
+
+    private func extractPregnancyPanelDraft(from recognizedText: String, sourceIndex: Int) async -> PregnancyPanelDraft? {
+        if let aiDraft = await extractPregnancyPanelDraftViaAI(from: recognizedText, sourceIndex: sourceIndex) {
+            return aiDraft
+        }
+        return extractPregnancyPanelDraftViaRegex(from: recognizedText, sourceIndex: sourceIndex)
+    }
+
+    private func extractPregnancyPanelDraftViaAI(from recognizedText: String, sourceIndex: Int) async -> PregnancyPanelDraft? {
+        let config = store.currentAIConfig()
+        guard !config.baseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+
+        let prompt = """
+        你是医学报告结构化助手。请从以下 OCR 文本里提取妊娠三项和报告日期，只返回 JSON，不要解释。
+        JSON 模板：
+        {
+          "intent": "create_check_record",
+          "slots": {
+            "check_type": "pregnancy_panel",
+            "hcg": "",
+            "progesterone": "",
+            "estradiol": "",
+            "check_date": ""
+          },
+          "need_clarify": false,
+          "clarify_question": "",
+          "assistant_reply": ""
+        }
+        OCR 文本：
+        \(recognizedText)
+        """
+
+        do {
+            let jsonText = try await chatService.sendWithRecovery(
+                config: config,
+                context: "妊娠三项图片结构化提取",
+                history: [],
+                userInput: prompt,
+                onStage: nil
+            )
+            guard let action = AIParse.parse(jsonText) else { return nil }
+            let hcg = parseLabNumeric(action.slots["hcg"])
+            let progesterone = parseLabNumeric(action.slots["progesterone"])
+            let estradiol = parseLabNumeric(action.slots["estradiol"])
+            guard let hcg, let progesterone, let estradiol else { return nil }
+
+            let checkDate = parseOCRDate(action.slots["check_date"])
+            return PregnancyPanelDraft(
+                sourceIndex: sourceIndex,
+                hcg: hcg,
+                progesterone: progesterone,
+                estradiol: estradiol,
+                checkDate: checkDate
+            )
+        } catch {
+            return nil
+        }
+    }
+
+    private func extractPregnancyPanelDraftViaRegex(from text: String, sourceIndex: Int) -> PregnancyPanelDraft? {
+        let hcgText = firstRegexCapture(in: text, pattern: #"(?i)(?:β-?hcg|hcg)[^0-9]{0,20}([0-9]+(?:\.[0-9]+)?)"#)
+            ?? firstRegexCapture(in: text, pattern: #"HCG[:：\s]*([0-9]+(?:\.[0-9]+)?)"#)
+        let progesteroneText = firstRegexCapture(in: text, pattern: #"孕酮[^0-9]{0,20}([0-9]+(?:\.[0-9]+)?)"#)
+            ?? firstRegexCapture(in: text, pattern: #"(?i)progesterone[^0-9]{0,20}([0-9]+(?:\.[0-9]+)?)"#)
+        let estradiolText = firstRegexCapture(in: text, pattern: #"雌二醇[^0-9]{0,20}([0-9]+(?:\.[0-9]+)?)"#)
+            ?? firstRegexCapture(in: text, pattern: #"(?i)(?:\bE2\b|estradiol)[^0-9]{0,20}([0-9]+(?:\.[0-9]+)?)"#)
+
+        guard let hcg = parseLabNumeric(hcgText),
+              let progesterone = parseLabNumeric(progesteroneText),
+              let estradiol = parseLabNumeric(estradiolText) else {
+            return nil
+        }
+
+        let dateCandidate = firstRegexCapture(in: text, pattern: #"(20\d{2}\s*[年/\-\.]\s*\d{1,2}\s*[月/\-\.]\s*\d{1,2}\s*日?)"#)
+            ?? firstRegexCapture(in: text, pattern: #"(\d{1,2}\s*[月/\-\.]\s*\d{1,2}\s*日?)"#)
+
+        return PregnancyPanelDraft(
+            sourceIndex: sourceIndex,
+            hcg: hcg,
+            progesterone: progesterone,
+            estradiol: estradiol,
+            checkDate: parseOCRDate(dateCandidate)
+        )
+    }
+
+    private func parseLabNumeric(_ raw: String?) -> Double? {
+        guard let raw else { return nil }
+        let normalized = raw.replacingOccurrences(of: ",", with: "")
+        if let direct = Double(normalized.trimmingCharacters(in: .whitespacesAndNewlines)) {
+            return direct
+        }
+        guard let capture = firstRegexCapture(in: normalized, pattern: #"([-+]?\d+(?:\.\d+)?)"#) else {
+            return nil
+        }
+        return Double(capture)
+    }
+
+    private func parseOCRDate(_ raw: String?) -> Date? {
+        guard let raw else { return nil }
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
+        let pattern = #"(?:(\d{4})\s*[年/\-\.])?\s*(\d{1,2})\s*[月/\-\.]\s*(\d{1,2})\s*日?"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
+        let range = NSRange(trimmed.startIndex..<trimmed.endIndex, in: trimmed)
+        guard let match = regex.firstMatch(in: trimmed, options: [], range: range) else { return nil }
+
+        let year = intCapture(match: match, group: 1, source: trimmed) ?? Calendar.current.component(.year, from: Date())
+        guard let month = intCapture(match: match, group: 2, source: trimmed),
+              let day = intCapture(match: match, group: 3, source: trimmed) else {
+            return nil
+        }
+        var components = DateComponents()
+        components.year = year
+        components.month = month
+        components.day = day
+        return Calendar.current.date(from: components)
+    }
+
+    private func intCapture(match: NSTextCheckingResult, group: Int, source: String) -> Int? {
+        guard group < match.numberOfRanges else { return nil }
+        let range = match.range(at: group)
+        guard range.location != NSNotFound, let swiftRange = Range(range, in: source) else { return nil }
+        return Int(source[swiftRange])
+    }
+
+    private func isoDateText(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter.string(from: date)
+    }
+
+    private func formatLabValue(_ value: Double) -> String {
+        String(format: "%.2f", value)
     }
 
     private func retryFailedMessage(messageID: String, input: String) async {
@@ -959,7 +1806,7 @@ struct ChatHomeView: View {
         do {
             let jsonText = try await chatService.sendWithRecovery(
                 config: config,
-                context: store.aiContextSummary(),
+                context: store.aiContextSummary(for: selectedHomeDate),
                 history: store.aiConversation(),
                 userInput: input
             ) { stage in
@@ -1097,15 +1944,18 @@ struct ChatHomeView: View {
         max(AppLayout.scrollTailPadding, composerDockHeight + 12)
     }
 
-    private func scrollToBottomStable(_ proxy: ScrollViewProxy) {
-        scrollToBottom(proxy)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
-            scrollToBottom(proxy)
+    private func scrollToBottomStable(_ proxy: ScrollViewProxy, animated: Bool) {
+        scrollToBottom(proxy, animated: animated)
+        pendingScrollWorkItem?.cancel()
+        let workItem = DispatchWorkItem {
+            scrollToBottom(proxy, animated: animated)
         }
+        pendingScrollWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08, execute: workItem)
     }
 
-    private func scrollToBottom(_ proxy: ScrollViewProxy) {
-        if reduceMotion {
+    private func scrollToBottom(_ proxy: ScrollViewProxy, animated: Bool) {
+        if reduceMotion || !animated {
             proxy.scrollTo(bottomAnchor, anchor: .bottom)
         } else {
             withAnimation(.easeOut(duration: 0.2)) {
@@ -1115,10 +1965,7 @@ struct ChatHomeView: View {
     }
 
     private func timeLabel(_ date: Date) -> String {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "zh_CN")
-        formatter.dateFormat = "HH:mm"
-        return formatter.string(from: date)
+        Self.Formatters.hhmm.string(from: date)
     }
 
     private var visibleMessages: [HomeChatMessage] {
@@ -1138,6 +1985,14 @@ struct ChatHomeView: View {
             let time = displayTime(for: pendingAction)
             return "创建用药：\(name)\(time.isEmpty ? "" : " · \(time)")"
         case "create_check_record":
+            if let preview = checkRecordBatchPreview(from: pendingAction.slots), preview.count > 1 {
+                if preview.dates.isEmpty {
+                    return "保存检查报告 \(preview.count) 条"
+                }
+                let previewDates = preview.dates.joined(separator: "、")
+                let tail = preview.count > preview.dates.count ? " 等" : ""
+                return "保存检查报告 \(preview.count) 条（\(previewDates)\(tail)）"
+            }
             let type = pendingAction.slots["check_type"] ?? "检查报告"
             return "保存检查报告：\(type)"
         case "create_appointment":
@@ -1222,6 +2077,32 @@ struct ChatHomeView: View {
         return nil
     }
 
+    private func checkRecordBatchPreview(from slots: [String: String]) -> (count: Int, dates: [String])? {
+        guard let raw = slots["check_records"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !raw.isEmpty,
+              let data = raw.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data) else {
+            return nil
+        }
+
+        let list: [[String: Any]]
+        if let array = json as? [[String: Any]] {
+            list = array
+        } else if let dict = json as? [String: Any], let nested = dict["records"] as? [[String: Any]] {
+            list = nested
+        } else {
+            return nil
+        }
+
+        let dates = list.compactMap { item in
+            firstNonEmptyString(item["check_date"], item["date"])
+        }
+        guard !dates.isEmpty else {
+            return (list.count, [])
+        }
+        return (list.count, Array(dates.prefix(3)))
+    }
+
     private func firstNonEmptyString(_ values: Any?...) -> String? {
         for value in values {
             let text: String
@@ -1255,7 +2136,7 @@ struct ChatHomeView: View {
         let override = dateSemanticOverride(from: userInput)
         let semanticFromAI = action.slots["date_semantic"] ?? action.slots["time_semantic"] ?? ""
         let semantic = override ?? (semanticFromAI.isEmpty ? userInput : semanticFromAI)
-        let (date, label) = dateFromSemantic(semantic)
+        let (date, label) = dateFromSemantic(semantic, fallback: selectedHomeDate)
         let sections = store.medicationSections(for: date)
         let injectionDue = store.isInjectionDue(on: date)
         let appointmentLines = scheduleAppointmentLines(on: date)
@@ -1305,7 +2186,7 @@ struct ChatHomeView: View {
         }
     }
 
-    private func dateFromSemantic(_ text: String) -> (date: Date, label: String) {
+    private func dateFromSemantic(_ text: String, fallback: Date) -> (date: Date, label: String) {
         let calendar = Calendar.current
         if text.contains("明天") || text.contains("明日") || text.lowercased().contains("tomorrow") {
             let date = calendar.date(byAdding: .day, value: 1, to: Date()) ?? Date()
@@ -1315,7 +2196,10 @@ struct ChatHomeView: View {
             let date = calendar.date(byAdding: .day, value: 2, to: Date()) ?? Date()
             return (date, "后天")
         }
-        return (Date(), "今天")
+        if let parsedDate = parseOCRDate(text) {
+            return (parsedDate, store.homeDisplayDateText(for: parsedDate))
+        }
+        return (fallback, store.homeDisplayDateText(for: fallback))
     }
 
     private func dateSemanticOverride(from text: String) -> String? {
@@ -1679,19 +2563,36 @@ struct UserBubble<Content: View>: View {
     var body: some View {
         HStack {
             Spacer()
-            // 用户气泡 - 浅色背景，黑色文字清晰可读
+            // 用户气泡 - Glassmorphism 风格，女性向渐变
             content
                 .padding(.horizontal, 14)
                 .padding(.vertical, 10)
                 .background(
                     RoundedRectangle(cornerRadius: 16, style: .continuous)
-                        .fill(Color(hex: "E8F5E9"))
+                        .fill(
+                            LinearGradient(
+                                colors: [
+                                    Color(hex: "FFB6D9"),
+                                    Color(hex: "E88B9C")
+                                ],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            )
+                        )
+                        .opacity(0.9)
                 )
                 .overlay(
                     RoundedRectangle(cornerRadius: 16, style: .continuous)
-                        .strokeBorder(Color(hex: "A5D6A7").opacity(0.4), lineWidth: 1)
+                        .strokeBorder(
+                            LinearGradient(
+                                colors: [.white.opacity(0.5), .white.opacity(0.1)],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            ),
+                            lineWidth: 1
+                        )
                 )
-                .shadow(color: Color.black.opacity(0.06), radius: 8, x: 0, y: 2)
+                .shadow(color: AppTheme.actionPrimary.opacity(0.25), radius: 12, x: 0, y: 4)
                 .frame(maxWidth: 280, alignment: .trailing)
         }
     }
@@ -1818,6 +2719,66 @@ struct AppImagePicker: UIViewControllerRepresentable {
 
         func imagePickerControllerDidCancel(_ picker: UIImagePickerController) {
             dismiss()
+        }
+    }
+}
+
+struct ChatMultiImagePicker: UIViewControllerRepresentable {
+    let selectionLimit: Int
+    let onPicked: ([UIImage]) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+
+    func makeUIViewController(context: Context) -> PHPickerViewController {
+        var config = PHPickerConfiguration(photoLibrary: .shared())
+        config.filter = .images
+        config.selectionLimit = selectionLimit
+        config.preferredAssetRepresentationMode = .current
+        let picker = PHPickerViewController(configuration: config)
+        picker.delegate = context.coordinator
+        return picker
+    }
+
+    func updateUIViewController(_ uiViewController: PHPickerViewController, context: Context) { }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onPicked: onPicked, dismiss: dismiss)
+    }
+
+    final class Coordinator: NSObject, PHPickerViewControllerDelegate {
+        private let onPicked: ([UIImage]) -> Void
+        private let dismiss: DismissAction
+
+        init(onPicked: @escaping ([UIImage]) -> Void, dismiss: DismissAction) {
+            self.onPicked = onPicked
+            self.dismiss = dismiss
+        }
+
+        func picker(_ picker: PHPickerViewController, didFinishPicking results: [PHPickerResult]) {
+            guard !results.isEmpty else {
+                dismiss()
+                return
+            }
+
+            var images = Array<UIImage?>(repeating: nil, count: results.count)
+            let group = DispatchGroup()
+
+            for (index, result) in results.enumerated() {
+                let provider = result.itemProvider
+                guard provider.canLoadObject(ofClass: UIImage.self) else { continue }
+                group.enter()
+                provider.loadObject(ofClass: UIImage.self) { object, _ in
+                    defer { group.leave() }
+                    if let image = object as? UIImage {
+                        images[index] = image
+                    }
+                }
+            }
+
+            group.notify(queue: .main) {
+                self.onPicked(images.compactMap { $0 })
+                self.dismiss()
+            }
         }
     }
 }

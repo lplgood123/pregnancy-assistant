@@ -22,6 +22,42 @@ enum TimePeriod: String, Codable, CaseIterable, Identifiable {
     }
 }
 
+enum ProfilePendingFieldKey {
+    static let name = "name"
+    static let gender = "gender"
+    static let birthDate = "birth_date"
+    static let lastPeriodDate = "last_period_date"
+    static let ivfTransferDate = "ivf_transfer_date"
+    static let firstPositiveDate = "first_positive_date"
+    static let wakeUpTime = "wake_up_time"
+    static let breakfastTime = "breakfast_time"
+    static let lunchTime = "lunch_time"
+    static let dinnerTime = "dinner_time"
+    static let sleepTime = "sleep_time"
+    static let height = "height"
+    static let weight = "weight"
+    static let allergy = "allergy"
+    static let doctor = "doctor"
+
+    static let defaults: [String] = [
+        name,
+        gender,
+        birthDate,
+        lastPeriodDate,
+        ivfTransferDate,
+        firstPositiveDate,
+        wakeUpTime,
+        breakfastTime,
+        lunchTime,
+        dinnerTime,
+        sleepTime,
+        height,
+        weight,
+        allergy,
+        doctor
+    ]
+}
+
 struct Profile: Codable {
     var name: String
     var gender: String
@@ -413,6 +449,20 @@ struct HomeSummaryCache: Codable {
     var updatedAt: Date
 }
 
+enum DailyGuideSource: String, Codable {
+    case local
+    case ai
+}
+
+struct DailyGuideSnapshot: Codable {
+    var dateKey: String
+    var weekGuide: String
+    var babyChange: String
+    var momChange: String
+    var source: DailyGuideSource
+    var updatedAt: Date
+}
+
 struct AppState: Codable {
     var profile: Profile
     var medications: [MedicationItem]
@@ -441,6 +491,7 @@ struct AppState: Codable {
     var profileOptionalFieldsSkipped: [String]
     var familyBindingDraft: FamilyBindingDraft?
     var homeSummaryCache: HomeSummaryCache?
+    var dailyGuideCache: [String: DailyGuideSnapshot]
 
     init(
         profile: Profile,
@@ -469,7 +520,8 @@ struct AppState: Codable {
         onboardingRequiredAtLeastOnce: Bool,
         profileOptionalFieldsSkipped: [String],
         familyBindingDraft: FamilyBindingDraft?,
-        homeSummaryCache: HomeSummaryCache?
+        homeSummaryCache: HomeSummaryCache?,
+        dailyGuideCache: [String: DailyGuideSnapshot]
     ) {
         self.profile = profile
         self.medications = medications
@@ -498,6 +550,7 @@ struct AppState: Codable {
         self.profileOptionalFieldsSkipped = profileOptionalFieldsSkipped
         self.familyBindingDraft = familyBindingDraft
         self.homeSummaryCache = homeSummaryCache
+        self.dailyGuideCache = dailyGuideCache
     }
 
     enum CodingKeys: String, CodingKey {
@@ -528,6 +581,7 @@ struct AppState: Codable {
         case profileOptionalFieldsSkipped
         case familyBindingDraft
         case homeSummaryCache
+        case dailyGuideCache
     }
 
     init(from decoder: Decoder) throws {
@@ -559,6 +613,7 @@ struct AppState: Codable {
         profileOptionalFieldsSkipped = try container.decodeIfPresent([String].self, forKey: .profileOptionalFieldsSkipped) ?? []
         familyBindingDraft = try container.decodeIfPresent(FamilyBindingDraft.self, forKey: .familyBindingDraft)
         homeSummaryCache = try container.decodeIfPresent(HomeSummaryCache.self, forKey: .homeSummaryCache)
+        dailyGuideCache = try container.decodeIfPresent([String: DailyGuideSnapshot].self, forKey: .dailyGuideCache) ?? [:]
     }
 }
 
@@ -657,15 +712,6 @@ struct TimelineSection: Identifiable {
 enum HomeTimelineScope {
     case medical
     case all
-}
-
-struct HomeGreetingCardSnapshot {
-    var warmGreeting: String
-    var overdueItems: [TimelineItem]
-    var todayExtraItems: [TimelineItem]
-    var tomorrowItems: [TimelineItem]
-    var showTomorrowHint: Bool
-    var pendingMedicalCount: Int
 }
 
 struct HomeSummary {
@@ -851,7 +897,41 @@ final class PregnancyStore: ObservableObject {
     func completeOnboarding(profile: Profile, reminder: ReminderConfig, skippedFields: [String]) {
         state.profile = profile
         state.reminderConfig = reminder
-        state.profileOptionalFieldsSkipped = skippedFields
+        var pending = Set(ProfilePendingFieldKey.defaults)
+        let skipped = Set(skippedFields)
+
+        if !isBlank(profile.name) {
+            pending.remove(ProfilePendingFieldKey.name)
+        }
+        pending.remove(ProfilePendingFieldKey.lastPeriodDate)
+
+        if !isBlank(reminder.wakeUpTime) {
+            pending.remove(ProfilePendingFieldKey.wakeUpTime)
+        }
+        if !isBlank(reminder.breakfastTime) {
+            pending.remove(ProfilePendingFieldKey.breakfastTime)
+        }
+        if !isBlank(reminder.lunchTime) {
+            pending.remove(ProfilePendingFieldKey.lunchTime)
+        }
+        if !isBlank(reminder.dinnerTime) {
+            pending.remove(ProfilePendingFieldKey.dinnerTime)
+        }
+        if !isBlank(reminder.sleepTime) {
+            pending.remove(ProfilePendingFieldKey.sleepTime)
+        }
+
+        if !isBlank(profile.heightCM) { pending.remove(ProfilePendingFieldKey.height) }
+        if !isBlank(profile.weightKG) { pending.remove(ProfilePendingFieldKey.weight) }
+        if !isBlank(profile.allergyHistory) { pending.remove(ProfilePendingFieldKey.allergy) }
+        if !isBlank(profile.doctorContact) { pending.remove(ProfilePendingFieldKey.doctor) }
+
+        if skipped.contains("height") { pending.insert(ProfilePendingFieldKey.height) }
+        if skipped.contains("weight") { pending.insert(ProfilePendingFieldKey.weight) }
+        if skipped.contains("allergy") { pending.insert(ProfilePendingFieldKey.allergy) }
+        if skipped.contains("doctor") { pending.insert(ProfilePendingFieldKey.doctor) }
+
+        state.profileOptionalFieldsSkipped = Array(pending).sorted()
         state.homeChatMessages = []
         state.lastHomeGreetingBusinessDateKey = nil
         state.homeSummaryCache = nil
@@ -1100,6 +1180,18 @@ final class PregnancyStore: ObservableObject {
         state.checkRecords = list
     }
 
+    func updateCheckRecord(_ record: CheckRecord) {
+        var list = state.checkRecords ?? []
+        var normalized = record
+        normalized.isArchived = false
+        if let index = list.firstIndex(where: { $0.id == normalized.id }) {
+            list[index] = normalized
+        } else {
+            list.append(normalized)
+        }
+        state.checkRecords = list
+    }
+
     func latestWeightComparisonInfo() -> (latestText: String, deltaText: String?)? {
         let snapshots = weightSnapshots()
         guard let latest = snapshots.first else { return nil }
@@ -1179,7 +1271,11 @@ final class PregnancyStore: ObservableObject {
     }
 
     var daysToDueText: String {
-        let days = calendar.dateComponents([.day], from: Date(), to: dueDate).day ?? 0
+        daysToDueText(on: Date())
+    }
+
+    func daysToDueText(on date: Date) -> String {
+        let days = calendar.dateComponents([.day], from: date, to: dueDate).day ?? 0
         if days >= 0 {
             return "距离预产期还有 \(days) 天"
         }
@@ -1200,6 +1296,37 @@ final class PregnancyStore: ObservableObject {
 
     func updateProfile(_ profile: Profile) {
         state.profile = profile
+        setProfileFieldPending(ProfilePendingFieldKey.name, pending: isBlank(profile.name))
+        setProfileFieldPending(ProfilePendingFieldKey.height, pending: isBlank(profile.heightCM))
+        setProfileFieldPending(ProfilePendingFieldKey.weight, pending: isBlank(profile.weightKG))
+        setProfileFieldPending(ProfilePendingFieldKey.allergy, pending: isBlank(profile.allergyHistory))
+        setProfileFieldPending(ProfilePendingFieldKey.doctor, pending: isBlank(profile.doctorContact))
+    }
+
+    func isProfileFieldPending(_ key: String) -> Bool {
+        Set(state.profileOptionalFieldsSkipped).contains(key)
+    }
+
+    func markProfileFieldFilled(_ key: String) {
+        setProfileFieldPending(key, pending: false)
+    }
+
+    func markProfileFieldPending(_ key: String) {
+        setProfileFieldPending(key, pending: true)
+    }
+
+    private func setProfileFieldPending(_ key: String, pending: Bool) {
+        var set = Set(state.profileOptionalFieldsSkipped)
+        if pending {
+            set.insert(key)
+        } else {
+            set.remove(key)
+        }
+        state.profileOptionalFieldsSkipped = Array(set).sorted()
+    }
+
+    private func isBlank(_ text: String?) -> Bool {
+        (text ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     func currentAIConfig() -> AIConfig {
@@ -1343,6 +1470,28 @@ final class PregnancyStore: ObservableObject {
             )
             return "已创建预约：\(title)（\(formatDate(dueDate)) \(appointmentTimeText(dueDate))）"
         case "create_check_record":
+            let batchRecords = parseBatchPregnancyPanelRecords(from: action.slots)
+            if !batchRecords.isEmpty {
+                for record in batchRecords {
+                    let metrics = [
+                        CheckMetric(key: "hcg", label: "HCG", valueText: formatValue(record.hcg), unit: "mIU/ml", referenceLowText: nil, referenceHighText: nil),
+                        CheckMetric(key: "progesterone", label: "孕酮 P", valueText: formatValue(record.progesterone), unit: "ng/ml", referenceLowText: nil, referenceHighText: nil),
+                        CheckMetric(key: "estradiol", label: "E2", valueText: formatValue(record.estradiol), unit: "pg/ml", referenceLowText: nil, referenceHighText: nil)
+                    ]
+                    addCheckRecord(
+                        CheckRecord(
+                            id: UUID().uuidString,
+                            type: .pregnancyPanel,
+                            checkTime: record.checkDate,
+                            metrics: metrics,
+                            note: record.note,
+                            source: .ai
+                        )
+                    )
+                }
+                return batchPregnancyPanelSaveSummary(for: batchRecords)
+            }
+
             let rawCheckType = action.slots["check_type"] ?? ""
             let typeInput = rawCheckType.isEmpty ? "妊娠三项" : rawCheckType
             let type = CheckType.fromDisplay(typeInput)
@@ -1486,6 +1635,12 @@ final class PregnancyStore: ObservableObject {
             }
 
             state.profile = profile
+            if parsed.heightCM != nil {
+                setProfileFieldPending(ProfilePendingFieldKey.height, pending: false)
+            }
+            if parsed.weightKG != nil {
+                setProfileFieldPending(ProfilePendingFieldKey.weight, pending: false)
+            }
             var reply = "已记录：\(updatedFields.joined(separator: "，"))。"
             if !weightAnalysis.isEmpty {
                 reply += "\n\(weightAnalysis)"
@@ -1849,6 +2004,90 @@ final class PregnancyStore: ObservableObject {
         return nil
     }
 
+    private struct BatchPregnancyPanelRecord {
+        let checkDate: Date
+        let hcg: Double
+        let progesterone: Double
+        let estradiol: Double
+        let note: String
+    }
+
+    private func parseBatchPregnancyPanelRecords(from slots: [String: String]) -> [BatchPregnancyPanelRecord] {
+        guard let raw = slots["check_records"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !raw.isEmpty,
+              let data = raw.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data) else {
+            return []
+        }
+
+        let rawRecords: [[String: Any]]
+        if let array = json as? [[String: Any]] {
+            rawRecords = array
+        } else if let dict = json as? [String: Any], let nested = dict["records"] as? [[String: Any]] {
+            rawRecords = nested
+        } else {
+            return []
+        }
+
+        return rawRecords.compactMap { item in
+            guard let hcg = parseLooseDouble(firstNonEmptyText(item["hcg"], item["HCG"])),
+                  let progesterone = parseLooseDouble(firstNonEmptyText(item["progesterone"], item["孕酮"], item["p"])),
+                  let estradiol = parseLooseDouble(firstNonEmptyText(item["estradiol"], item["E2"], item["雌二醇"])) else {
+                return nil
+            }
+
+            let checkDateText = firstNonEmptyText(item["check_date"], item["date"], item["checkDate"])
+            let checkDate = parseFlexibleDateOptional(checkDateText) ?? Date()
+            let note = firstNonEmptyText(item["note"], item["remark"]) ?? ""
+            return BatchPregnancyPanelRecord(
+                checkDate: checkDate,
+                hcg: hcg,
+                progesterone: progesterone,
+                estradiol: estradiol,
+                note: note
+            )
+        }
+    }
+
+    private func parseLooseDouble(_ raw: String?) -> Double? {
+        guard let raw else { return nil }
+        let normalized = raw
+            .replacingOccurrences(of: ",", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else { return nil }
+        if let direct = Double(normalized) {
+            return direct
+        }
+
+        guard let regex = try? NSRegularExpression(pattern: #"([-+]?\d+(?:\.\d+)?)"#) else {
+            return nil
+        }
+        let range = NSRange(normalized.startIndex..<normalized.endIndex, in: normalized)
+        guard let match = regex.firstMatch(in: normalized, options: [], range: range),
+              let swiftRange = Range(match.range(at: 1), in: normalized) else {
+            return nil
+        }
+        return Double(normalized[swiftRange])
+    }
+
+    private func batchPregnancyPanelSaveSummary(for records: [BatchPregnancyPanelRecord]) -> String {
+        guard !records.isEmpty else { return "检查报告数值不完整" }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.dateFormat = "yyyy-MM-dd"
+
+        let uniqueDates = Array(
+            Set(records.map { formatter.string(from: $0.checkDate) })
+        ).sorted()
+
+        if uniqueDates.isEmpty {
+            return "已保存检查报告 \(records.count) 条"
+        }
+        let preview = uniqueDates.prefix(3).joined(separator: "、")
+        let tail = uniqueDates.count > 3 ? " 等" : ""
+        return "已保存检查报告 \(records.count) 条（\(preview)\(tail)）"
+    }
+
     private func parseProfileMetrics(from slots: [String: String]) -> (heightCM: Double?, weightKG: Double?) {
         let heightRaw = firstNonEmptyText(
             slots["height_cm"],
@@ -2070,15 +2309,26 @@ final class PregnancyStore: ObservableObject {
     }
 
     func saveReminderConfig(_ config: ReminderConfig) {
+        let wake = config.wakeUpTime.trimmingCharacters(in: .whitespacesAndNewlines)
+        let breakfast = config.breakfastTime.trimmingCharacters(in: .whitespacesAndNewlines)
+        let lunch = config.lunchTime.trimmingCharacters(in: .whitespacesAndNewlines)
+        let dinner = config.dinnerTime.trimmingCharacters(in: .whitespacesAndNewlines)
+        let sleep = config.sleepTime.trimmingCharacters(in: .whitespacesAndNewlines)
+
         state.reminderConfig = ReminderConfig(
-            wakeUpTime: config.wakeUpTime.trimmingCharacters(in: .whitespacesAndNewlines),
-            breakfastTime: config.breakfastTime.trimmingCharacters(in: .whitespacesAndNewlines),
-            lunchTime: config.lunchTime.trimmingCharacters(in: .whitespacesAndNewlines),
-            dinnerTime: config.dinnerTime.trimmingCharacters(in: .whitespacesAndNewlines),
-            sleepTime: config.sleepTime.trimmingCharacters(in: .whitespacesAndNewlines),
+            wakeUpTime: wake,
+            breakfastTime: breakfast,
+            lunchTime: lunch,
+            dinnerTime: dinner,
+            sleepTime: sleep,
             minutesBefore: 0,
             enableSystemReminders: config.enableSystemReminders
         )
+        setProfileFieldPending(ProfilePendingFieldKey.wakeUpTime, pending: wake.isEmpty)
+        setProfileFieldPending(ProfilePendingFieldKey.breakfastTime, pending: breakfast.isEmpty)
+        setProfileFieldPending(ProfilePendingFieldKey.lunchTime, pending: lunch.isEmpty)
+        setProfileFieldPending(ProfilePendingFieldKey.dinnerTime, pending: dinner.isEmpty)
+        setProfileFieldPending(ProfilePendingFieldKey.sleepTime, pending: sleep.isEmpty)
         markReminderRulesDirty()
     }
 
@@ -2093,9 +2343,10 @@ final class PregnancyStore: ObservableObject {
         }
     }
 
-    func aiContextSummary() -> String {
+    func aiContextSummary(for date: Date = Date()) -> String {
         let profile = state.profile
-        let todayText = formatDate(Date())
+        let targetDate = calendar.startOfDay(for: date)
+        let todayText = formatDate(targetDate)
         let nowText = formatDateTime(Date())
         let medsText = TimePeriod.allCases
             .sorted { $0.sortOrder < $1.sortOrder }
@@ -2119,10 +2370,10 @@ final class PregnancyStore: ObservableObject {
         }.joined(separator: "\n")
 
         return """
-        当前日期：\(todayText)，当前时间：\(nowText)
+        目标日期：\(todayText)，当前时间：\(nowText)
         姓名：\(profile.name)，性别：\(profile.gender)，年龄：\(age)岁
         身高：\(profile.heightCM ?? "未记录")cm，体重：\(profile.weightKG ?? "未记录")kg
-        当前孕周：\(gestationalWeekText)，\(daysToDueText)
+        当前孕周：\(gestationalWeekText(for: targetDate))，\(daysToDueText(on: targetDate))
         试管植入：\(formatDate(profile.ivfTransferDate))，首次验孕阳性：\(formatDate(profile.firstPositiveDate))
         每日目标：步数\(profile.stepsGoal)，饮水\(profile.waterGoalML)ml
         每日用药：
@@ -2484,35 +2735,161 @@ final class PregnancyStore: ObservableObject {
     }
 
     func quickCommandPrompts() -> [QuickCommand] {
-        switch pregnancyStage {
-        case .early:
-            return [
-                QuickCommand(title: "今日安排", prompt: "请汇总我今天需要注意的安排：用药、打针、回诊和其他提醒。", icon: "calendar.badge.clock"),
-                QuickCommand(title: "记录妊娠三项", prompt: "我今天做了妊娠三项，帮我记录", icon: "testtube.2"),
-                QuickCommand(title: "用药调整", prompt: "我有用药要调整，帮我记录。", icon: "pills"),
-                QuickCommand(title: "加复查预约", prompt: "我想新增一个复查预约，帮我记录。", icon: "calendar"),
-                QuickCommand(title: "明天吃什么药", prompt: "帮我按时段列出明天要吃的药。", icon: "list.bullet.clipboard"),
-                QuickCommand(title: "调整提醒时间", prompt: "我想调整提醒时间，帮我记录。", icon: "alarm")
-            ]
-        case .middle:
-            return [
-                QuickCommand(title: "今日安排", prompt: "请汇总我今天需要注意的安排：用药、打针、回诊和其他提醒。", icon: "calendar.badge.clock"),
-                QuickCommand(title: "记录NT/唐筛", prompt: "我今天做了NT或唐筛，帮我记录", icon: "chart.bar"),
-                QuickCommand(title: "加复查预约", prompt: "我想新增一个复查预约，帮我记录。", icon: "cross.case"),
-                QuickCommand(title: "用药调整", prompt: "我有用药要调整，帮我记录。", icon: "pills"),
-                QuickCommand(title: "明天吃什么药", prompt: "帮我按时段列出明天要吃的药。", icon: "list.bullet.clipboard"),
-                QuickCommand(title: "调整提醒时间", prompt: "我想调整提醒时间，帮我记录。", icon: "alarm")
-            ]
-        case .late:
-            return [
-                QuickCommand(title: "今日安排", prompt: "请汇总我今天需要注意的安排：用药、打针、回诊和其他提醒。", icon: "calendar.badge.clock"),
-                QuickCommand(title: "记录胎动", prompt: "我想记录今天胎动情况", icon: "figure.and.child.holdinghands"),
-                QuickCommand(title: "加复查预约", prompt: "我想新增一个复查预约，帮我记录。", icon: "cross.case"),
-                QuickCommand(title: "用药调整", prompt: "我有用药要调整，帮我记录。", icon: "pills"),
-                QuickCommand(title: "明天吃什么药", prompt: "帮我按时段列出明天要吃的药。", icon: "list.bullet.clipboard"),
-                QuickCommand(title: "调整提醒时间", prompt: "我想调整提醒时间，帮我记录。", icon: "alarm")
-            ]
+        [
+            QuickCommand(title: "今日安排", prompt: "请汇总我今天需要注意的安排：用药、打针、回诊和其他提醒。", icon: "calendar.badge.clock"),
+            QuickCommand(title: "记录报告单", prompt: "我想记录报告单，请引导我上传检查报告图片或手动填写。", icon: "doc.text.viewfinder"),
+            QuickCommand(title: "用药调整", prompt: "我有用药要调整，帮我记录。", icon: "pills"),
+            QuickCommand(title: "成分识别", prompt: "帮我识别这个商品/食品成分，判断孕期是否可用。", icon: "leaf"),
+            QuickCommand(title: "加复查预约", prompt: "我想新增一个复查预约，帮我记录。", icon: "calendar"),
+            QuickCommand(title: "调整提醒时间", prompt: "我想调整提醒时间，帮我记录。", icon: "alarm")
+        ]
+    }
+
+    func weeklyWeightSummary(for date: Date = Date()) -> (title: String, detail: String) {
+        guard let currentWeek = calendar.dateInterval(of: .weekOfYear, for: date) else {
+            return ("本周体重", "暂无数据")
         }
+        let previousWeekStart = calendar.date(byAdding: .day, value: -7, to: currentWeek.start) ?? currentWeek.start
+        let previousWeekEnd = currentWeek.start
+        let snapshots = weightSnapshots()
+
+        let currentValues = snapshots
+            .filter { currentWeek.contains($0.checkTime) }
+            .map(\.value)
+        let previousValues = snapshots
+            .filter { $0.checkTime >= previousWeekStart && $0.checkTime < previousWeekEnd }
+            .map(\.value)
+
+        if currentValues.isEmpty {
+            if let latest = latestWeightSnapshot() {
+                let latestValue = formattedBodyMetric(latest.value, maxFractionDigits: 1)
+                return ("本周体重", "暂无本周记录，最近一次 \(latestValue)kg")
+            }
+            return ("本周体重", "暂无体重记录")
+        }
+
+        let currentAvg = currentValues.reduce(0, +) / Double(currentValues.count)
+        let currentText = formattedBodyMetric(currentAvg, maxFractionDigits: 1)
+        let title = "本周体重均值 \(currentText)kg"
+
+        guard !previousValues.isEmpty else {
+            return (title, "较上周：暂无可对比数据")
+        }
+
+        let previousAvg = previousValues.reduce(0, +) / Double(previousValues.count)
+        let delta = currentAvg - previousAvg
+        let sign = delta >= 0 ? "+" : "-"
+        let deltaText = formattedBodyMetric(abs(delta), maxFractionDigits: 1)
+        return (title, "较上周：\(sign)\(deltaText)kg")
+    }
+
+    func dailyGuideSnapshot(for date: Date = Date()) -> DailyGuideSnapshot {
+        let key = dateKey(for: date)
+        if let cached = state.dailyGuideCache[key] {
+            return cached
+        }
+        return localDailyGuideSnapshot(for: date)
+    }
+
+    func saveDailyGuideSnapshot(_ snapshot: DailyGuideSnapshot) {
+        state.dailyGuideCache[snapshot.dateKey] = snapshot
+    }
+
+    private func localDailyGuideSnapshot(for date: Date) -> DailyGuideSnapshot {
+        let pregnancyWeek = max(calendar.dateComponents([.day], from: state.profile.lastPeriodDate, to: date).day ?? 0, 0) / 7
+        let weekday = max(calendar.component(.weekday, from: date) - 1, 0)
+
+        let earlyBaby = [
+            "胚胎主要器官在持续发育，规律作息有助于稳定状态。",
+            "神经系统与心血管系统持续形成，按时补充叶酸更重要。",
+            "宝宝发育节奏加快，保持规律饮食和休息。",
+            "胚胎结构继续完善，避免过度劳累和熬夜。",
+            "关键发育期持续进行，尽量减少刺激性饮食。",
+            "胎芽变化明显，保持稳定心情有助于身体适应。",
+            "本周发育重点是器官细化，维持规律生活最重要。"
+        ]
+        let earlyMom = [
+            "你可能会有乏力或嗜睡，白天可安排短暂休息。",
+            "晨起轻微恶心较常见，可少量多餐缓解。",
+            "食欲波动正常，优先保证蛋白质和水分。",
+            "情绪敏感是孕期常见反应，适当放慢节奏。",
+            "若出现明显不适，先休息并及时记录变化。",
+            "保持轻量活动有助于减轻疲惫和压力。",
+            "本周建议继续规律睡眠，避免空腹太久。"
+        ]
+        let midBaby = [
+            "宝宝骨骼和肌肉发育更明显，活动能力逐步增强。",
+            "神经连接持续完善，发育进入更稳定阶段。",
+            "宝宝体型增长更快，营养需求随之提高。",
+            "器官功能进一步成熟，日常节律逐渐建立。",
+            "生长速度上升，按时产检可更好掌握进展。",
+            "宝宝感官发育持续推进，发育节奏整体平稳。",
+            "本周发育重点在体格增长和功能完善。"
+        ]
+        let midMom = [
+            "体力通常较早孕更稳定，建议保持适度运动。",
+            "注意钙和蛋白质摄入，支持中期发育需求。",
+            "若久坐后不适，可分段活动缓解压力。",
+            "体重管理以平稳增长为主，不必追求过快变化。",
+            "坚持规律作息，有助于维持白天精力。",
+            "若出现下肢明显肿胀，建议尽快评估。",
+            "本周建议继续观察睡眠与饮食节奏。"
+        ]
+        let lateBaby = [
+            "宝宝体重持续增加，发育重点转向成熟与储备。",
+            "肺部和神经系统继续完善，逐步为分娩做准备。",
+            "活动空间变小，胎动节律可能更有规律。",
+            "发育进入冲刺阶段，规律复查很关键。",
+            "宝宝脂肪储备增加，体型变化更明显。",
+            "本周重点是功能成熟，注意按计划复诊。",
+            "发育节奏稳定推进，继续关注胎动变化。"
+        ]
+        let lateMom = [
+            "中晚孕阶段更容易疲劳，适当分配活动强度。",
+            "可关注腿部水肿与睡眠质量，必要时及时就诊。",
+            "若夜间不适增多，建议提前规划休息节奏。",
+            "持续记录胎动与不适，有助于复诊沟通。",
+            "饮食以清淡均衡为主，避免过量高盐高糖。",
+            "本周建议减少长时间站立，注意下肢放松。",
+            "若出现持续异常症状，请尽快联系医生。"
+        ]
+
+        let stage: PregnancyStage
+        if pregnancyWeek < 14 {
+            stage = .early
+        } else if pregnancyWeek < 28 {
+            stage = .middle
+        } else {
+            stage = .late
+        }
+
+        let weekGuide: String
+        let babyChange: String
+        let momChange: String
+
+        switch stage {
+        case .early:
+            weekGuide = "本周建议：规律作息、少量多餐、按时补充叶酸。"
+            babyChange = earlyBaby[weekday % earlyBaby.count]
+            momChange = earlyMom[weekday % earlyMom.count]
+        case .middle:
+            weekGuide = "本周建议：稳定运动节奏，关注体重与营养平衡。"
+            babyChange = midBaby[weekday % midBaby.count]
+            momChange = midMom[weekday % midMom.count]
+        case .late:
+            weekGuide = "本周建议：按时复诊，重点关注胎动与休息质量。"
+            babyChange = lateBaby[weekday % lateBaby.count]
+            momChange = lateMom[weekday % lateMom.count]
+        }
+
+        return DailyGuideSnapshot(
+            dateKey: dateKey(for: date),
+            weekGuide: weekGuide,
+            babyChange: babyChange,
+            momChange: momChange,
+            source: .local,
+            updatedAt: Date()
+        )
     }
 
     func nextUpcomingMedication() -> NextMedication? {
@@ -2674,10 +3051,6 @@ final class PregnancyStore: ObservableObject {
     }
 
     func homeWarmGreetingLine(now: Date = Date()) -> String {
-        homeGreetingCardSnapshot(now: now).warmGreeting
-    }
-
-    func homeGreetingCardSnapshot(now: Date = Date()) -> HomeGreetingCardSnapshot {
         let hour = calendar.component(.hour, from: now)
         let salutation: String
         switch hour {
@@ -2693,80 +3066,11 @@ final class PregnancyStore: ObservableObject {
 
         let name = state.profile.name.trimmingCharacters(in: .whitespacesAndNewlines)
         let greeting = name.isEmpty ? salutation : "\(name)，\(salutation)"
-        let allMedicalToday = todayTimelineItems(scope: .medical, includeCompleted: true, now: now)
-        let pendingMedicalItems = allMedicalToday.filter { !$0.isCompleted }
-        let pendingMedicalCount = pendingMedicalItems.count
-        let currentMinutes = calendar.component(.hour, from: now) * 60 + calendar.component(.minute, from: now)
-
-        let overdueItems = pendingMedicalItems.filter { item in
-            guard let itemMinutes = timeToMinutes(item.timeText) else { return false }
-            return itemMinutes <= currentMinutes
-        }
-
-        let overdueIDs = Set(overdueItems.map(\.id))
-        let todayExtraItems = pendingMedicalItems.filter { item in
-            if item.kind == .appointment || item.kind == .check {
-                return !overdueIDs.contains(item.id)
-            }
-            if item.id.hasPrefix("extra-") || item.id.hasPrefix("injection-") {
-                return !overdueIDs.contains(item.id)
-            }
-            return false
-        }
-
-        let tomorrow = calendar.date(byAdding: .day, value: 1, to: calendar.startOfDay(for: now))
-            ?? calendar.startOfDay(for: now)
-        let tomorrowItems = timelineItems(for: tomorrow)
-            .filter { $0.kind != .habit && !$0.isCompleted }
-            .sorted { lhs, rhs in
-                let lhsMinutes = timeToMinutes(lhs.timeText) ?? Int.max
-                let rhsMinutes = timeToMinutes(rhs.timeText) ?? Int.max
-                if lhsMinutes != rhsMinutes {
-                    return lhsMinutes < rhsMinutes
-                }
-                if lhs.kind != rhs.kind {
-                    return timelineKindSortRank(lhs.kind) < timelineKindSortRank(rhs.kind)
-                }
-                return lhs.id < rhs.id
-            }
-
-        let showTomorrowHint = hour >= 18 && !tomorrowItems.isEmpty
-        let warmGreeting: String
+        let pendingMedicalCount = todayTimelineItems(scope: .medical, includeCompleted: false, now: now).count
         if pendingMedicalCount == 0 {
-            warmGreeting = "\(greeting)，今天安排已经完成。"
-        } else {
-            warmGreeting = "\(greeting)，今天还有 \(pendingMedicalCount) 项医疗安排。"
+            return "\(greeting)，今天医疗安排已完成。"
         }
-
-        return HomeGreetingCardSnapshot(
-            warmGreeting: warmGreeting,
-            overdueItems: overdueItems,
-            todayExtraItems: todayExtraItems,
-            tomorrowItems: tomorrowItems,
-            showTomorrowHint: showTomorrowHint,
-            pendingMedicalCount: pendingMedicalCount
-        )
-    }
-
-    func formatOverdueLine(items: [TimelineItem], pendingMedicalCount: Int) -> String? {
-        guard pendingMedicalCount > 0 else { return nil }
-        if items.isEmpty {
-            return "截止当前时间的安排都已完成，后续还有 \(pendingMedicalCount) 项待处理。"
-        }
-        return "到现在还有这些安排没完成：\(timelinePreviewText(items, limit: 3))。"
-    }
-
-    func formatTodayExtraLine(items: [TimelineItem]) -> String? {
-        guard !items.isEmpty else { return nil }
-        return "另外今天还有：\(timelinePreviewText(items, limit: 3))。"
-    }
-
-    func formatTomorrowHintLine(items: [TimelineItem]) -> String? {
-        guard !items.isEmpty else { return nil }
-        if let first = items.first {
-            return "今晚提醒：明天有 \(items.count) 项安排，最早 \(first.timeText) \(first.title)。"
-        }
-        return "今晚提醒：明天有安排。"
+        return "\(greeting)，今天还有 \(pendingMedicalCount) 项医疗安排，我会陪你按节奏完成。"
     }
 
     func todayTimelineItems(
@@ -3070,6 +3374,7 @@ final class PregnancyStore: ObservableObject {
         state.homeSummaryCache = nil
         state.completedDailyTaskIDs = []
         state.todayNotes = []
+        state.profileOptionalFieldsSkipped = ProfilePendingFieldKey.defaults
     }
 
     private func migrateLegacyCheckRecordsIfNeeded() {
@@ -3226,9 +3531,10 @@ final class PregnancyStore: ObservableObject {
             onboardingCompleted: false,
             onboardingStep: 1,
             onboardingRequiredAtLeastOnce: true,
-            profileOptionalFieldsSkipped: [],
+            profileOptionalFieldsSkipped: ProfilePendingFieldKey.defaults,
             familyBindingDraft: nil,
-            homeSummaryCache: nil
+            homeSummaryCache: nil,
+            dailyGuideCache: [:]
         )
     }
 
@@ -3287,19 +3593,6 @@ final class PregnancyStore: ObservableObject {
         }
     }
 
-    private func timelinePreviewText(_ items: [TimelineItem], limit: Int) -> String {
-        guard !items.isEmpty else { return "" }
-        let clipped = Array(items.prefix(limit))
-        var parts = clipped.map { item in
-            "\(item.timeText) \(item.title)"
-        }
-        let remain = items.count - clipped.count
-        if remain > 0 {
-            parts.append("等 \(remain) 项")
-        }
-        return parts.joined(separator: "、")
-    }
-
     func appointmentTimeText(_ date: Date) -> String {
         let comps = calendar.dateComponents([.hour, .minute], from: date)
         let hour = comps.hour ?? 0
@@ -3308,6 +3601,10 @@ final class PregnancyStore: ObservableObject {
             return "09:00"
         }
         return String(format: "%02d:%02d", hour, minute)
+    }
+
+    func homeDisplayDateText(for date: Date) -> String {
+        homeDateText(for: date)
     }
 
     private func homeDateText(for date: Date) -> String {

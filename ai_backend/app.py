@@ -4,7 +4,7 @@ import json
 import os
 import re
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import requests
@@ -116,6 +116,165 @@ def normalize_chat_json(raw: str) -> str:
         "assistant_reply": cleaned or "我在呢，你可以告诉我要记录什么。",
     }
     return json.dumps(fallback, ensure_ascii=False)
+
+
+MEDICAL_DISCLAIMER = "以上为孕期健康参考，若症状加重或持续，请及时联系医生/专业人士。"
+
+
+def extract_json_dict(raw: str) -> dict | None:
+    cleaned = strip_reasoning_artifacts(raw)
+    candidate = cleaned
+    if not (candidate.startswith("{") and candidate.endswith("}")):
+        start = candidate.find("{")
+        end = candidate.rfind("}")
+        if start != -1 and end != -1 and end > start:
+            candidate = candidate[start : end + 1].strip()
+    try:
+        obj = json.loads(candidate)
+        if isinstance(obj, dict):
+            return obj
+    except Exception:
+        return None
+    return None
+
+
+def parse_loose_float(raw: object) -> float | None:
+    if raw is None:
+        return None
+    if isinstance(raw, (int, float)):
+        value = float(raw)
+        return value if value == value else None
+    text = str(raw).strip()
+    if not text:
+        return None
+    text = text.replace(",", "")
+    try:
+        return float(text)
+    except Exception:
+        pass
+    match = re.search(r"([-+]?\d+(?:\.\d+)?)", text)
+    if not match:
+        return None
+    try:
+        return float(match.group(1))
+    except Exception:
+        return None
+
+
+def parse_flexible_date_text(raw: object, now: datetime | None = None) -> str:
+    text = str(raw or "").strip()
+    if not text:
+        return ""
+
+    if now is None:
+        now = datetime.now(ZoneInfo(env_trim("APP_TIMEZONE", "Asia/Shanghai") or "Asia/Shanghai"))
+
+    if "后天" in text:
+        return (now + timedelta(days=2)).strftime("%Y-%m-%d")
+    if "明天" in text or "明日" in text:
+        return (now + timedelta(days=1)).strftime("%Y-%m-%d")
+    if "今天" in text or "今日" in text:
+        return now.strftime("%Y-%m-%d")
+
+    date_match = re.search(r"(?:(20\d{2})\s*[年/\-.])?\s*(\d{1,2})\s*[月/\-.]\s*(\d{1,2})\s*日?", text)
+    if date_match:
+        year_text, month_text, day_text = date_match.groups()
+        year = int(year_text) if year_text else now.year
+        month = int(month_text)
+        day = int(day_text)
+        try:
+            return datetime(year, month, day).strftime("%Y-%m-%d")
+        except Exception:
+            return ""
+
+    iso_match = re.search(r"(20\d{2})-(\d{1,2})-(\d{1,2})", text)
+    if iso_match:
+        y, m, d = iso_match.groups()
+        try:
+            return datetime(int(y), int(m), int(d)).strftime("%Y-%m-%d")
+        except Exception:
+            return ""
+    return ""
+
+
+def is_medical_query(user_input: str) -> bool:
+    lowered = user_input.lower()
+    keywords = [
+        "孕", "宫缩", "出血", "流血", "腹痛", "疼", "呕吐", "发热", "发烧", "头痛",
+        "头晕", "胎动", "破水", "血压", "心率", "恶心", "药", "用药", "注射",
+        "反应", "症状", "hcg", "孕酮", "雌二醇", "产检", "复诊", "检查",
+    ]
+    return any(word in lowered for word in keywords)
+
+
+def has_red_flag_symptom(user_input: str) -> bool:
+    lowered = user_input.lower()
+    red_flags = [
+        "大量出血",
+        "持续出血",
+        "剧痛",
+        "持续腹痛",
+        "晕厥",
+        "昏厥",
+        "高热",
+        "39",
+        "无法进食",
+        "呼吸困难",
+        "胸痛",
+        "胎动明显减少",
+        "破水",
+    ]
+    return any(flag in lowered for flag in red_flags)
+
+
+def ensure_medical_disclaimer(text: str) -> str:
+    trimmed = text.strip()
+    if not trimmed:
+        return MEDICAL_DISCLAIMER
+    if MEDICAL_DISCLAIMER in trimmed:
+        return trimmed
+    if trimmed.endswith(("。", "！", "？", "!", "?")):
+        return f"{trimmed}{MEDICAL_DISCLAIMER}"
+    return f"{trimmed}。{MEDICAL_DISCLAIMER}"
+
+
+def enforce_medical_reply_policy(raw_json: str, user_input: str) -> str:
+    obj = extract_json_dict(raw_json)
+    if not obj:
+        return raw_json
+
+    intent = str(obj.get("intent", "unknown"))
+    assistant_reply = str(obj.get("assistant_reply", "") or "").strip()
+
+    if not is_medical_query(user_input):
+        return json.dumps(
+            {
+                "intent": intent,
+                "slots": obj.get("slots") if isinstance(obj.get("slots"), dict) else {},
+                "need_clarify": bool(obj.get("need_clarify", False)),
+                "clarify_question": str(obj.get("clarify_question", "")),
+                "assistant_reply": assistant_reply,
+            },
+            ensure_ascii=False,
+        )
+
+    if intent == "unknown":
+        if not assistant_reply:
+            assistant_reply = "你这个情况我先给你一般建议：先休息、补水，继续观察症状变化。"
+        if has_red_flag_symptom(user_input):
+            urgent = "你提到的症状有潜在风险，建议尽快线下就医或联系产科。"
+            if urgent not in assistant_reply:
+                assistant_reply = f"{urgent}{assistant_reply}"
+        assistant_reply = ensure_medical_disclaimer(assistant_reply)
+
+    normalized = {
+        "intent": intent,
+        "slots": obj.get("slots") if isinstance(obj.get("slots"), dict) else {},
+        "need_clarify": bool(obj.get("need_clarify", False)),
+        "clarify_question": str(obj.get("clarify_question", "")),
+        "assistant_reply": assistant_reply,
+    }
+    return json.dumps(normalized, ensure_ascii=False)
 
 
 class BackendError(Exception):
@@ -334,7 +493,7 @@ def build_chat_system_prompt(context: str) -> str:
 规则：
 1) 只输出 JSON，禁止解释、禁止附加文字。
 2) 如果关键信息不全，need_clarify=true，并提供简短追问。
-3) 不做医学诊断与建议。
+3) 不做医学诊断与处方；但可给孕期常见情况的一般性分级建议（居家观察/生活调整/何时就医阈值）。
 4) 若用户询问“今天/明天吃什么药、用药安排”，intent=query_schedule，date_semantic=今天/明天/后天。
 5) 若用户表达“复诊/回诊/产检/就诊/挂号/去医院”等就医计划，应优先 intent=create_appointment，而不是 create_check_record；
    可复用 slots.item_name/check_date/time_exact/note（例如 item_name=产检复诊，check_date=下周五，time_exact=09:00）。
@@ -342,15 +501,16 @@ def build_chat_system_prompt(context: str) -> str:
 7) 若用户要求记录或更新身高/体重（如“身高165体重52.3”、“帮我记体重53公斤”），intent=update_profile；
    能提取就直接填 slots.height_cm / slots.weight_kg（仅数字，不带单位），不追问。
    同一句里有身高和体重时，两个字段都要填，不允许只填一个。
-8) 若用户询问医疗判断/治疗建议，assistant_reply 需提示“我是健康助手，不是医生，请咨询医生”。
-9) 不支持的操作（如修改既有用药、确认已服用）统一返回 intent=unknown，并在 assistant_reply 给出可执行替代建议。
-10) 如果用户一次输入多条用药（例如按“起床后/早饭后/晚饭后/睡前”列出多个药），intent=create_medication，
+8) 若用户询问孕反或不适症状，可给可执行建议；若涉及红旗症状（大量出血、持续剧痛、晕厥、高热不退等），assistant_reply 必须优先建议尽快就医。
+9) 医疗相关 assistant_reply 结尾必须加：以上为孕期健康参考，若症状加重或持续，请及时联系医生/专业人士。
+10) 不支持的操作（如修改既有用药、确认已服用）统一返回 intent=unknown，并在 assistant_reply 给出可执行替代建议。
+11) 如果用户一次输入多条用药（例如按“起床后/早饭后/晚饭后/睡前”列出多个药），intent=create_medication，
    slots.medications 必须返回完整数组，每个元素填写 item_name/dosage/time_semantic/note；
    不要只填第一项。单条用药时可仅填 item_name/dosage/time_semantic。
-11) 对提醒类意图（create_reminder / update_reminder_time）：
+12) 对提醒类意图（create_reminder / update_reminder_time）：
    只要能识别到 time_semantic（如“起床后/早饭后/午饭后/晚饭后/睡前”）就可以执行，
    不要因为没有具体时钟时间就追问。用户说“和早餐后吃药一起提醒”时，time_semantic=早饭后，need_clarify=false。
-12) 参考用户资料与用药计划：
+13) 参考用户资料与用药计划：
 {safe_context}
 """.strip()
 
@@ -364,6 +524,278 @@ HOME_SUMMARY_SYSTEM_PROMPT = """
 4) 控制在 40-80 字，输出纯文本，不要 JSON/Markdown/项目符号。
 5) 严禁输出任何思考过程标签或内容（例如 <think>、分析过程、步骤列表）。
 """.strip()
+
+
+DAILY_GUIDE_SYSTEM_PROMPT = """
+你是孕期健康内容助手。请根据用户给定日期和孕周信息，输出当天的简短指南内容。
+仅输出 JSON：
+{
+  "week_guide": "",
+  "baby_change": "",
+  "mom_change": ""
+}
+要求：
+1) 语气温和、直白。
+2) 每个字段 20-80 字。
+3) 不要输出 Markdown、不要额外解释。
+4) 不要给处方或诊断。
+""".strip()
+
+
+PANEL_GROUP_SYSTEM_PROMPT = """
+你是医学报告结构化助手。任务是从多张 OCR 文本中提取“妊娠三项”记录，并智能判断是一次检查还是多次检查。
+仅输出 JSON：
+{
+  "records": [
+    {
+      "check_type": "pregnancy_panel",
+      "check_date": "YYYY-MM-DD",
+      "hcg": 0,
+      "progesterone": 0,
+      "estradiol": 0,
+      "note": "",
+      "source_indexes": [0]
+    }
+  ],
+  "failed_indexes": []
+}
+规则：
+1) 如果多张图片属于同一次检查（同日且指标互补/重复），应合并为一条记录。
+2) 如果明显是不同日期或不同检查，应拆分为多条记录。
+3) source_indexes 使用 0-based 索引，表示该记录来自哪些 OCR 文本。
+4) 没法提取完整三项的图片索引写入 failed_indexes。
+5) 只输出 JSON。
+""".strip()
+
+
+INGREDIENT_ANALYZE_SYSTEM_PROMPT = f"""
+你是孕期成分识别助手。根据 OCR 文本判断成分对孕期使用的风险等级。
+仅输出 JSON：
+{{
+  "overall": "可用|谨慎|避免",
+  "usable": [{{"name": "", "reason": ""}}],
+  "caution": [{{"name": "", "reason": ""}}],
+  "avoid": [{{"name": "", "reason": ""}}],
+  "summary": "",
+  "alternatives": [""]
+}}
+规则：
+1) 使用“三档结论”：可用/谨慎/避免。
+2) 每条 reason 简短明确，优先给孕期关注点。
+3) 可给 1-3 条替代建议到 alternatives。
+4) 不输出任何 Markdown 或额外文本。
+5) 不做诊断与处方。
+6) 响应仅 JSON，免责声明由系统追加：{MEDICAL_DISCLAIMER}
+""".strip()
+
+
+def normalize_daily_guide_payload(raw_text: str, date_text: str) -> dict:
+    obj = extract_json_dict(raw_text) or {}
+    week_guide = first_non_empty(
+        [
+            str(obj.get("week_guide", "")),
+            str(obj.get("weekGuide", "")),
+            str(obj.get("guide", "")),
+        ]
+    )
+    baby_change = first_non_empty(
+        [
+            str(obj.get("baby_change", "")),
+            str(obj.get("babyChange", "")),
+            str(obj.get("fetus_change", "")),
+        ]
+    )
+    mom_change = first_non_empty(
+        [
+            str(obj.get("mom_change", "")),
+            str(obj.get("momChange", "")),
+            str(obj.get("mother_change", "")),
+        ]
+    )
+
+    if not week_guide:
+        week_guide = "今天保持规律作息和均衡饮食，按计划完成用药与休息。"
+    if not baby_change:
+        baby_change = "宝宝在按节奏发育，稳定作息和营养摄入有助于整体状态。"
+    if not mom_change:
+        mom_change = "妈妈今天重点是补水、规律进食和避免过度劳累。"
+
+    return {
+        "date_key": date_text,
+        "week_guide": week_guide,
+        "baby_change": baby_change,
+        "mom_change": mom_change,
+        "source": "ai",
+    }
+
+
+def extract_panel_record_from_text(text: str, source_index: int, now: datetime) -> dict | None:
+    hcg_match = re.search(r"(?i)(?:β-?hcg|hcg)[^0-9]{0,20}([-+]?\d+(?:\.\d+)?)", text)
+    p_match = re.search(r"(?i)(?:孕酮|progesterone|\bp\b)[^0-9]{0,20}([-+]?\d+(?:\.\d+)?)", text)
+    e2_match = re.search(r"(?i)(?:雌二醇|estradiol|\be2\b)[^0-9]{0,20}([-+]?\d+(?:\.\d+)?)", text)
+    if not hcg_match or not p_match or not e2_match:
+        return None
+
+    hcg = parse_loose_float(hcg_match.group(1))
+    progesterone = parse_loose_float(p_match.group(1))
+    estradiol = parse_loose_float(e2_match.group(1))
+    if hcg is None or progesterone is None or estradiol is None:
+        return None
+
+    date_match = re.search(r"(20\d{2}\s*[年/\-.]\s*\d{1,2}\s*[月/\-.]\s*\d{1,2}\s*日?)", text)
+    if not date_match:
+        date_match = re.search(r"(\d{1,2}\s*[月/\-.]\s*\d{1,2}\s*日?)", text)
+    check_date = parse_flexible_date_text(date_match.group(1) if date_match else "", now=now)
+
+    return {
+        "check_type": "pregnancy_panel",
+        "check_date": check_date,
+        "hcg": hcg,
+        "progesterone": progesterone,
+        "estradiol": estradiol,
+        "note": "",
+        "source_indexes": [source_index],
+    }
+
+
+def normalize_panel_group_payload(raw_text: str, ocr_texts: list[str], now: datetime) -> dict:
+    parsed = extract_json_dict(raw_text) or {}
+    records_raw = parsed.get("records") if isinstance(parsed.get("records"), list) else []
+    failed_indexes_raw = parsed.get("failed_indexes") if isinstance(parsed.get("failed_indexes"), list) else []
+
+    normalized_records: list[dict] = []
+    used_indexes: set[int] = set()
+    explicit_failed: set[int] = set()
+
+    for index in failed_indexes_raw:
+        try:
+            idx = int(index)
+        except Exception:
+            continue
+        if 0 <= idx < len(ocr_texts):
+            explicit_failed.add(idx)
+
+    for item in records_raw:
+        if not isinstance(item, dict):
+            continue
+        hcg = parse_loose_float(item.get("hcg"))
+        progesterone = parse_loose_float(item.get("progesterone"))
+        estradiol = parse_loose_float(item.get("estradiol"))
+        if hcg is None or progesterone is None or estradiol is None:
+            continue
+
+        source_indexes: list[int] = []
+        raw_sources = item.get("source_indexes")
+        if isinstance(raw_sources, list):
+            for raw_idx in raw_sources:
+                try:
+                    idx = int(raw_idx)
+                except Exception:
+                    continue
+                if 0 <= idx < len(ocr_texts):
+                    source_indexes.append(idx)
+        else:
+            single_idx = item.get("source_index")
+            if single_idx is not None:
+                try:
+                    idx = int(single_idx)
+                    if 0 <= idx < len(ocr_texts):
+                        source_indexes.append(idx)
+                except Exception:
+                    pass
+
+        source_indexes = sorted(set(source_indexes))
+        used_indexes.update(source_indexes)
+        note = str(item.get("note", "") or "").strip()
+        check_date = parse_flexible_date_text(item.get("check_date"), now=now)
+        normalized_records.append(
+            {
+                "check_type": "pregnancy_panel",
+                "check_date": check_date,
+                "hcg": hcg,
+                "progesterone": progesterone,
+                "estradiol": estradiol,
+                "note": note,
+                "source_indexes": source_indexes,
+            }
+        )
+
+    if not normalized_records:
+        for idx, text in enumerate(ocr_texts):
+            fallback = extract_panel_record_from_text(text, idx, now=now)
+            if fallback:
+                normalized_records.append(fallback)
+                used_indexes.add(idx)
+
+    failed_indexes = set(explicit_failed)
+    for idx in range(len(ocr_texts)):
+        if idx not in used_indexes:
+            failed_indexes.add(idx)
+
+    return {
+        "records": normalized_records,
+        "failed_indexes": sorted(failed_indexes),
+    }
+
+
+def parse_ingredient_items(raw_items: object) -> list[dict]:
+    if not isinstance(raw_items, list):
+        return []
+    parsed: list[dict] = []
+    for item in raw_items:
+        if isinstance(item, dict):
+            name = str(item.get("name", "") or "").strip()
+            reason = str(item.get("reason", "") or "").strip()
+            if name or reason:
+                parsed.append({"name": name or "未命名成分", "reason": reason})
+        elif isinstance(item, str):
+            trimmed = item.strip()
+            if trimmed:
+                parsed.append({"name": trimmed, "reason": ""})
+    return parsed
+
+
+def normalize_ingredient_payload(raw_text: str) -> dict:
+    obj = extract_json_dict(raw_text) or {}
+    usable = parse_ingredient_items(obj.get("usable"))
+    caution = parse_ingredient_items(obj.get("caution"))
+    avoid = parse_ingredient_items(obj.get("avoid"))
+
+    overall = str(obj.get("overall", "") or "").strip()
+    if overall not in {"可用", "谨慎", "避免"}:
+        if avoid:
+            overall = "避免"
+        elif caution:
+            overall = "谨慎"
+        else:
+            overall = "可用"
+
+    summary = str(obj.get("summary", "") or "").strip()
+    if not summary:
+        if overall == "避免":
+            summary = "检测到对孕期风险较高的成分，建议暂不使用。"
+        elif overall == "谨慎":
+            summary = "存在需谨慎评估的成分，建议减少频次并关注反应。"
+        else:
+            summary = "暂未发现明显高风险成分，可按需使用并观察反应。"
+
+    alternatives_raw = obj.get("alternatives")
+    alternatives: list[str] = []
+    if isinstance(alternatives_raw, list):
+        for item in alternatives_raw:
+            text = str(item or "").strip()
+            if text:
+                alternatives.append(text)
+
+    return {
+        "overall": overall,
+        "usable": usable,
+        "caution": caution,
+        "avoid": avoid,
+        "summary": summary,
+        "alternatives": alternatives,
+        "disclaimer": MEDICAL_DISCLAIMER,
+    }
 
 
 @app.get("/healthz")
@@ -415,7 +847,9 @@ def ai_chat():
     except BackendError as err:
         return jsonify({"error": err.message}), err.status_code
 
-    return jsonify({"content": normalize_chat_json(text)})
+    normalized = normalize_chat_json(text)
+    normalized = enforce_medical_reply_policy(normalized, user_input)
+    return jsonify({"content": normalized})
 
 
 @app.post("/api/ai/home-summary")
@@ -442,6 +876,124 @@ def ai_home_summary():
         return jsonify({"error": err.message}), err.status_code
 
     return jsonify({"content": normalize_plain_text(raw_text)})
+
+
+@app.post("/api/ai/guide/daily")
+def ai_daily_guide():
+    allowed, reject = require_backend_token()
+    if not allowed:
+        return reject
+
+    payload = request.get_json(silent=True) or {}
+    date_text = str(payload.get("date", "")).strip() or datetime.now().strftime("%Y-%m-%d")
+    gestational_text = str(payload.get("gestational_text", "")).strip()
+    profile_context = str(payload.get("profile_context", "")).strip()
+    model = str(payload.get("model", "")).strip() or None
+
+    user_message = (
+        f"日期：{date_text}\n"
+        f"孕周信息：{gestational_text or '未知'}\n"
+        f"用户资料：{profile_context or '无'}\n"
+        "请输出当天指南 JSON。"
+    )
+
+    messages = [
+        {"role": "system", "content": DAILY_GUIDE_SYSTEM_PROMPT},
+        {"role": "user", "content": user_message},
+    ]
+
+    try:
+        raw_text = call_minimax_chat(messages=messages, model=model, temperature=0.4)
+    except BackendError as err:
+        return jsonify({"error": err.message}), err.status_code
+
+    result = normalize_daily_guide_payload(raw_text, date_text=date_text)
+    return jsonify(result)
+
+
+@app.post("/api/ai/report/pregnancy-panel/group")
+def ai_group_pregnancy_panel_report():
+    allowed, reject = require_backend_token()
+    if not allowed:
+        return reject
+
+    payload = request.get_json(silent=True) or {}
+    ocr_texts = payload.get("ocr_texts")
+    model = str(payload.get("model", "")).strip() or None
+    now_text = str(payload.get("now", "")).strip()
+
+    if not isinstance(ocr_texts, list) or not ocr_texts:
+        return jsonify({"error": "ocr_texts is required"}), 400
+
+    safe_ocr_texts: list[str] = []
+    for item in ocr_texts:
+        if isinstance(item, str):
+            safe_ocr_texts.append(item.strip())
+        else:
+            safe_ocr_texts.append(str(item))
+
+    try:
+        if now_text:
+            now = datetime.fromisoformat(now_text.replace("Z", "+00:00"))
+        else:
+            now = datetime.now(ZoneInfo(env_trim("APP_TIMEZONE", "Asia/Shanghai") or "Asia/Shanghai"))
+    except Exception:
+        now = datetime.now(ZoneInfo(env_trim("APP_TIMEZONE", "Asia/Shanghai") or "Asia/Shanghai"))
+
+    ocr_payload = "\n\n".join(
+        [f"=== OCR[{idx}] ===\n{text}" for idx, text in enumerate(safe_ocr_texts)]
+    )
+    user_message = (
+        "请对以下 OCR 文本做妊娠三项分组提取：\n"
+        f"{ocr_payload}\n"
+        f"当前时间：{now.strftime('%Y-%m-%d %H:%M')}"
+    )
+    messages = [
+        {"role": "system", "content": PANEL_GROUP_SYSTEM_PROMPT},
+        {"role": "user", "content": user_message},
+    ]
+
+    try:
+        raw_text = call_minimax_chat(messages=messages, model=model, temperature=0.2)
+        normalized = normalize_panel_group_payload(raw_text, safe_ocr_texts, now=now)
+    except BackendError as err:
+        return jsonify({"error": err.message}), err.status_code
+
+    return jsonify(normalized)
+
+
+@app.post("/api/ai/ingredient/analyze")
+def ai_ingredient_analyze():
+    allowed, reject = require_backend_token()
+    if not allowed:
+        return reject
+
+    payload = request.get_json(silent=True) or {}
+    ocr_texts = payload.get("ocr_texts")
+    profile_context = str(payload.get("profile_context", "")).strip()
+    model = str(payload.get("model", "")).strip() or None
+
+    if not isinstance(ocr_texts, list) or not ocr_texts:
+        return jsonify({"error": "ocr_texts is required"}), 400
+
+    safe_ocr_texts = [str(item or "").strip() for item in ocr_texts]
+    user_message = (
+        f"用户资料：{profile_context or '无'}\n"
+        "以下是商品/食品成分 OCR：\n"
+        + "\n\n".join([f"=== OCR[{idx}] ===\n{text}" for idx, text in enumerate(safe_ocr_texts)])
+        + "\n请输出三档风险结论 JSON。"
+    )
+    messages = [
+        {"role": "system", "content": INGREDIENT_ANALYZE_SYSTEM_PROMPT},
+        {"role": "user", "content": user_message},
+    ]
+
+    try:
+        raw_text = call_minimax_chat(messages=messages, model=model, temperature=0.2)
+    except BackendError as err:
+        return jsonify({"error": err.message}), err.status_code
+
+    return jsonify(normalize_ingredient_payload(raw_text))
 
 
 if __name__ == "__main__":

@@ -3,7 +3,6 @@ import UIKit
 
 enum MainTab: Hashable {
     case home
-    case records
     case profile
 }
 
@@ -17,21 +16,13 @@ struct ContentView: View {
     @State private var lastSyncedReminderRevision = 0
 
     var body: some View {
-        ZStack {
-            ChatHomeView(tabBarVisible: selectedTab == .home && !isKeyboardVisible)
-                .opacity(selectedTab == .home ? 1 : 0)
-                .allowsHitTesting(selectedTab == .home)
-                .accessibilityHidden(selectedTab != .home)
-
-            CheckListView()
-                .opacity(selectedTab == .records ? 1 : 0)
-                .allowsHitTesting(selectedTab == .records)
-                .accessibilityHidden(selectedTab != .records)
-
-            ProfileView()
-                .opacity(selectedTab == .profile ? 1 : 0)
-                .allowsHitTesting(selectedTab == .profile)
-                .accessibilityHidden(selectedTab != .profile)
+        Group {
+            switch selectedTab {
+            case .home:
+                ChatHomeView(tabBarVisible: !isKeyboardVisible)
+            case .profile:
+                ProfileView()
+            }
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             if !isKeyboardVisible {
@@ -52,7 +43,7 @@ struct ContentView: View {
         .onAppear {
             syncRemindersIfNeeded()
         }
-        .onChange(of: store.reminderSyncRevision) { _, _ in
+        .onChange(of: store.reminderSyncRevision) { _ in
             syncRemindersIfNeeded()
         }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) { notification in
@@ -66,7 +57,6 @@ struct ContentView: View {
     private var customTabBar: some View {
         HStack(spacing: 0) {
             tabItemButton(tab: .home, title: "首页", icon: "house.fill")
-            tabItemButton(tab: .records, title: "记录", icon: "list.bullet.rectangle.portrait.fill")
             tabItemButton(tab: .profile, title: "我的", icon: "person.crop.circle.fill")
         }
         .frame(height: AppLayout.mainTabBarHeight)
@@ -241,108 +231,206 @@ struct GlobalBannerBar: View {
 
 struct ProfileView: View {
     @EnvironmentObject private var store: PregnancyStore
-    @State private var draft: Profile?
     @State private var relationName = ""
     @State private var relationPhone = ""
     @State private var inviteCodePlaceholder = "INVITE-准备中"
     @State private var showResetAllDataDialog = false
     @State private var isResettingAllData = false
+    @State private var activeEditor: ProfileEditor?
+    @State private var showReminderSettingsSheet = false
+
+    private enum ProfileEditor: Identifiable {
+        case text(TextEditorField)
+        case date(DateEditorField)
+        case integer(IntegerEditorField)
+        case gender
+
+        var id: String {
+            switch self {
+            case .text(let field): return "text_\(field.rawValue)"
+            case .date(let field): return "date_\(field.rawValue)"
+            case .integer(let field): return "integer_\(field.rawValue)"
+            case .gender: return "gender"
+            }
+        }
+    }
+
+    private enum TextEditorField: String, CaseIterable {
+        case name
+        case height
+        case weight
+        case allergy
+        case doctor
+        case familyName
+        case familyPhone
+
+        var title: String {
+            switch self {
+            case .name: return "姓名"
+            case .height: return "身高(cm)"
+            case .weight: return "体重(kg)"
+            case .allergy: return "过敏史"
+            case .doctor: return "主治医生/联系方式"
+            case .familyName: return "关系人称呼"
+            case .familyPhone: return "关系人手机"
+            }
+        }
+
+        var placeholder: String {
+            switch self {
+            case .name: return "请输入姓名"
+            case .height: return "例如 165"
+            case .weight: return "例如 52.3"
+            case .allergy: return "例如 青霉素过敏"
+            case .doctor: return "例如 王医生 13800000000"
+            case .familyName: return "例如 老公"
+            case .familyPhone: return "请输入手机号"
+            }
+        }
+
+        var keyboardType: UIKeyboardType {
+            switch self {
+            case .height, .weight:
+                return .decimalPad
+            case .familyPhone:
+                return .numberPad
+            default:
+                return .default
+            }
+        }
+    }
+
+    private enum DateEditorField: String, CaseIterable {
+        case birthDate
+        case lastPeriodDate
+        case ivfTransferDate
+        case firstPositiveDate
+
+        var title: String {
+            switch self {
+            case .birthDate: return "出生日期"
+            case .lastPeriodDate: return "末次月经"
+            case .ivfTransferDate: return "试管植入日期"
+            case .firstPositiveDate: return "首次验孕日期"
+            }
+        }
+    }
+
+    private enum IntegerEditorField: String, CaseIterable {
+        case stepsGoal
+        case waterGoal
+
+        var title: String {
+            switch self {
+            case .stepsGoal: return "步数目标"
+            case .waterGoal: return "饮水目标"
+            }
+        }
+
+        var unit: String {
+            switch self {
+            case .stepsGoal: return "步"
+            case .waterGoal: return "ml"
+            }
+        }
+
+        var range: ClosedRange<Int> {
+            switch self {
+            case .stepsGoal: return 2000...30000
+            case .waterGoal: return 500...4000
+            }
+        }
+
+        var step: Int {
+            switch self {
+            case .stepsGoal: return 500
+            case .waterGoal: return 100
+            }
+        }
+    }
 
     var body: some View {
         NavigationStack {
             ZStack {
-                AppTheme.background.ignoresSafeArea()
+                Color(hex: "EFEFF4").ignoresSafeArea()
 
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 14) {
-                        profileHeaderCard
-                            .padding(.horizontal)
-
-                        profileSection(title: "基础信息") {
-                            AppCard {
-                                VStack(spacing: 10) {
-                                    rowTextField("姓名", text: binding(\.name))
-                                    rowTextField("性别", text: binding(\.gender))
-                                    rowDatePicker("出生日期", selection: binding(\.birthDate))
-                                    rowDatePicker("末次月经", selection: binding(\.lastPeriodDate))
-                                    rowDatePicker("试管植入日期", selection: binding(\.ivfTransferDate))
-                                    rowDatePicker("首次验孕日期", selection: binding(\.firstPositiveDate))
-                                }
+                    VStack(spacing: 12) {
+                        rowGroup {
+                            listRow(title: "姓名", value: pendingText(ProfilePendingFieldKey.name, raw: store.state.profile.name)) {
+                                activeEditor = .text(.name)
+                            }
+                            listRow(title: "性别", value: pendingText(ProfilePendingFieldKey.gender, raw: store.state.profile.gender)) {
+                                activeEditor = .gender
+                            }
+                            listRow(title: "出生日期", value: pendingDateText(ProfilePendingFieldKey.birthDate, date: store.state.profile.birthDate)) {
+                                activeEditor = .date(.birthDate)
+                            }
+                            listRow(title: "末次月经", value: pendingDateText(ProfilePendingFieldKey.lastPeriodDate, date: store.state.profile.lastPeriodDate)) {
+                                activeEditor = .date(.lastPeriodDate)
+                            }
+                            listRow(title: "试管植入日期", value: pendingDateText(ProfilePendingFieldKey.ivfTransferDate, date: store.state.profile.ivfTransferDate)) {
+                                activeEditor = .date(.ivfTransferDate)
+                            }
+                            listRow(title: "首次验孕日期", value: pendingDateText(ProfilePendingFieldKey.firstPositiveDate, date: store.state.profile.firstPositiveDate), showDivider: false) {
+                                activeEditor = .date(.firstPositiveDate)
                             }
                         }
 
-                        profileSection(title: "三餐与作息") {
-                            AppCard {
-                                ReminderSettingsView()
+                        rowGroup {
+                            listRow(title: "三餐与作息", value: reminderSummary, showDivider: false) {
+                                showReminderSettingsSheet = true
+                            }
+                        }
+
+                        rowGroup {
+                            navigationListRow(title: "记录中心", value: "用药 / 检查报告 / 预约", showDivider: false) {
+                                CheckListView(initialSegment: .medication, embeddedInParentNavigation: true)
                                     .environmentObject(store)
+                                    .navigationTitle("记录中心")
+                                    .navigationBarTitleDisplayMode(.inline)
                             }
                         }
 
-                        profileSection(title: "健康信息") {
-                            AppCard {
-                                VStack(spacing: 10) {
-                                    rowTextField("身高(cm)", text: optionalBinding(\.heightCM))
-                                    rowTextField("体重(kg)", text: optionalBinding(\.weightKG))
-                                    rowTextField("过敏史", text: optionalBinding(\.allergyHistory))
-                                    rowTextField("主治医生/联系方式", text: optionalBinding(\.doctorContact))
-
-                                    Divider().overlay(AppTheme.borderLight)
-                                    Stepper("步数目标：\(draft?.stepsGoal ?? 0) 步", value: binding(\.stepsGoal), in: 2000...30000, step: 500)
-                                    Stepper("饮水目标：\(draft?.waterGoalML ?? 0) ml", value: binding(\.waterGoalML), in: 500...4000, step: 100)
-                                }
+                        rowGroup {
+                            listRow(title: "身高(cm)", value: pendingText(ProfilePendingFieldKey.height, raw: store.state.profile.heightCM)) {
+                                activeEditor = .text(.height)
+                            }
+                            listRow(title: "体重(kg)", value: pendingText(ProfilePendingFieldKey.weight, raw: store.state.profile.weightKG)) {
+                                activeEditor = .text(.weight)
+                            }
+                            listRow(title: "过敏史", value: pendingText(ProfilePendingFieldKey.allergy, raw: store.state.profile.allergyHistory)) {
+                                activeEditor = .text(.allergy)
+                            }
+                            listRow(title: "主治医生/联系方式", value: pendingText(ProfilePendingFieldKey.doctor, raw: store.state.profile.doctorContact)) {
+                                activeEditor = .text(.doctor)
+                            }
+                            listRow(title: "步数目标", value: "\(store.state.profile.stepsGoal) 步") {
+                                activeEditor = .integer(.stepsGoal)
+                            }
+                            listRow(title: "饮水目标", value: "\(store.state.profile.waterGoalML) ml", showDivider: false) {
+                                activeEditor = .integer(.waterGoal)
                             }
                         }
 
-                        profileSection(title: "家属绑定准备") {
-                            AppCard {
-                                VStack(spacing: 10) {
-                                    rowTextField("关系人称呼", text: $relationName)
-                                    rowTextField("关系人手机", text: $relationPhone)
-                                    HStack {
-                                        Text("邀请码")
-                                            .font(.footnote)
-                                            .foregroundStyle(AppTheme.textSecondary)
-                                            .frame(width: 88, alignment: .leading)
-                                        Text(inviteCodePlaceholder)
-                                            .font(.footnote.weight(.semibold))
-                                            .foregroundStyle(AppTheme.actionPrimary)
-                                        Spacer()
-                                    }
-                                    Text("说明：本版本先做绑定准备，真正家属端会在后续版本上线。")
-                                        .font(.caption)
-                                        .foregroundStyle(AppTheme.textSecondary)
-                                        .frame(maxWidth: .infinity, alignment: .leading)
-                                }
+                        rowGroup {
+                            listRow(title: "关系人称呼", value: displayText(relationName)) {
+                                activeEditor = .text(.familyName)
                             }
+                            listRow(title: "关系人手机", value: displayText(relationPhone)) {
+                                activeEditor = .text(.familyPhone)
+                            }
+                            readonlyRow(title: "邀请码", value: inviteCodePlaceholder, showDivider: false)
                         }
 
-                        profileSection(title: "数据管理") {
-                            AppCard {
-                                VStack(alignment: .leading, spacing: 10) {
-                                    Text("一键清除所有记录、聊天与提醒设置，恢复到首次进入 App 的状态。")
-                                        .font(.caption)
-                                        .foregroundStyle(AppTheme.textSecondary)
-                                        .frame(maxWidth: .infinity, alignment: .leading)
-
-                                    Button(role: .destructive) {
-                                        showResetAllDataDialog = true
-                                    } label: {
-                                        Text(isResettingAllData ? "清除中..." : "清除所有数据并重置")
-                                            .font(.footnote.weight(.semibold))
-                                            .frame(maxWidth: .infinity)
-                                            .frame(minHeight: 44)
-                                            .background(AppTheme.statusErrorSoft)
-                                            .foregroundStyle(AppTheme.statusError)
-                                            .clipShape(RoundedRectangle(cornerRadius: 10))
-                                    }
-                                    .buttonStyle(.plain)
-                                    .disabled(isResettingAllData)
-                                }
+                        rowGroup {
+                            destructiveRow(title: isResettingAllData ? "清除中..." : "清除所有数据并重置", showDivider: false) {
+                                showResetAllDataDialog = true
                             }
+                            .disabled(isResettingAllData)
                         }
-
                     }
-                    .padding(.top, 12)
+                    .padding(.top, 10)
                     .padding(.bottom, AppLayout.tabPageScrollTailPadding)
                 }
             }
@@ -363,106 +451,199 @@ struct ProfileView: View {
             }
             .navigationTitle("我的")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("保存") {
-                        saveDraftIfNeeded()
-                    }
-                }
-            }
             .onAppear {
-                reloadDraftFromStore()
+                reloadBindingsFromStore()
             }
-            .onDisappear {
-                saveDraftIfNeeded()
+            .sheet(item: $activeEditor) { editor in
+                editorSheet(editor)
+            }
+            .sheet(isPresented: $showReminderSettingsSheet) {
+                NavigationStack {
+                    ReminderSettingsView()
+                        .environmentObject(store)
+                        .navigationTitle("三餐与作息")
+                        .navigationBarTitleDisplayMode(.inline)
+                }
             }
             .font(AppTheme.bodyFont)
         }
     }
 
-    private var profileHeaderCard: some View {
-        HStack(spacing: 12) {
-            Image(systemName: "figure.2")
-                .font(.title2.weight(.semibold))
-                .foregroundStyle(AppTheme.actionPrimary)
-                .frame(width: 56, height: 56)
-                .background(LinearGradient(colors: [Color(hex: "FCEEE3"), Color(hex: "F9DCC8")], startPoint: .topLeading, endPoint: .bottomTrailing))
-                .clipShape(Circle())
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text(draft?.name ?? store.state.profile.name)
-                    .font(.headline)
-                    .foregroundStyle(AppTheme.textPrimary)
-                Text("孕 \(store.gestationalWeekText) · 预产期 \(store.formatDate(store.dueDate))")
-                    .font(.footnote)
-                    .foregroundStyle(AppTheme.textSecondary)
-                Text("为了提醒更准确，可随时更新资料")
-                    .font(.caption)
-                    .foregroundStyle(AppTheme.textHint)
-            }
-            Spacer()
-        }
-        .padding(16)
-        .background(AppTheme.card)
-        .overlay(
-            RoundedRectangle(cornerRadius: AppTheme.cornerRadius)
-                .stroke(AppTheme.border, lineWidth: 1)
-        )
-        .clipShape(RoundedRectangle(cornerRadius: AppTheme.cornerRadius))
+    private var reminderSummary: String {
+        let config = store.currentReminderConfig()
+        let wake = pendingReminderValue(ProfilePendingFieldKey.wakeUpTime, raw: config.wakeUpTime)
+        let breakfast = pendingReminderValue(ProfilePendingFieldKey.breakfastTime, raw: config.breakfastTime)
+        let lunch = pendingReminderValue(ProfilePendingFieldKey.lunchTime, raw: config.lunchTime)
+        let dinner = pendingReminderValue(ProfilePendingFieldKey.dinnerTime, raw: config.dinnerTime)
+        let sleep = pendingReminderValue(ProfilePendingFieldKey.sleepTime, raw: config.sleepTime)
+        return "\(wake) / \(breakfast) / \(lunch) / \(dinner) / \(sleep)"
     }
 
-    private func profileSection<Content: View>(title: String, @ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(title)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(AppTheme.textHint)
-                .padding(.horizontal)
+    private func rowGroup<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        VStack(spacing: 0) {
             content()
-                .padding(.horizontal)
+        }
+        .background(Color.white)
+    }
+
+    private func listRow(
+        title: String,
+        value: String,
+        showDivider: Bool = true,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            HStack(spacing: 12) {
+                Text(title)
+                    .font(.system(size: 19, weight: .regular))
+                    .foregroundStyle(Color(hex: "1C1C1E"))
+                Spacer(minLength: 8)
+                Text(value)
+                    .font(.system(size: 18, weight: .regular))
+                    .foregroundStyle(Color(hex: "8E8E93"))
+                    .multilineTextAlignment(.trailing)
+                    .lineLimit(1)
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(Color(hex: "B6B6BB"))
+            }
+            .frame(minHeight: 56)
+            .padding(.horizontal, 16)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .overlay(alignment: .bottom) {
+            if showDivider {
+                Divider().padding(.leading, 16)
+            }
         }
     }
 
-    private func rowTextField(_ title: String, text: Binding<String>) -> some View {
-        HStack {
+    private func navigationListRow<Destination: View>(
+        title: String,
+        value: String,
+        showDivider: Bool = true,
+        @ViewBuilder destination: @escaping () -> Destination
+    ) -> some View {
+        NavigationLink(destination: destination()) {
+            HStack(spacing: 12) {
+                Text(title)
+                    .font(.system(size: 19, weight: .regular))
+                    .foregroundStyle(Color(hex: "1C1C1E"))
+                Spacer(minLength: 8)
+                Text(value)
+                    .font(.system(size: 18, weight: .regular))
+                    .foregroundStyle(Color(hex: "8E8E93"))
+                    .multilineTextAlignment(.trailing)
+                    .lineLimit(1)
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(Color(hex: "B6B6BB"))
+            }
+            .frame(minHeight: 56)
+            .padding(.horizontal, 16)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .overlay(alignment: .bottom) {
+            if showDivider {
+                Divider().padding(.leading, 16)
+            }
+        }
+    }
+
+    private func readonlyRow(title: String, value: String, showDivider: Bool = true) -> some View {
+        HStack(spacing: 12) {
             Text(title)
-                .font(.footnote)
-                .foregroundStyle(AppTheme.textSecondary)
-                .frame(width: 88, alignment: .leading)
-            TextField(title, text: text)
-                .textFieldStyle(.roundedBorder)
+                .font(.system(size: 19, weight: .regular))
+                .foregroundStyle(Color(hex: "1C1C1E"))
+            Spacer(minLength: 8)
+            Text(value)
+                .font(.system(size: 18, weight: .regular))
+                .foregroundStyle(Color(hex: "8E8E93"))
+                .multilineTextAlignment(.trailing)
+                .lineLimit(1)
+        }
+        .frame(minHeight: 56)
+        .padding(.horizontal, 16)
+        .overlay(alignment: .bottom) {
+            if showDivider {
+                Divider().padding(.leading, 16)
+            }
         }
     }
 
-    private func rowDatePicker(_ title: String, selection: Binding<Date>) -> some View {
-        AppDateField(title, selection: selection, titleWidth: 88)
+    private func destructiveRow(
+        title: String,
+        showDivider: Bool = true,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(role: .destructive, action: action) {
+            HStack(spacing: 12) {
+                Text(title)
+                    .font(.system(size: 18, weight: .regular))
+                    .foregroundStyle(Color(hex: "D64545"))
+                Spacer(minLength: 8)
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(Color(hex: "B6B6BB"))
+            }
+            .frame(minHeight: 56)
+            .padding(.horizontal, 16)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .overlay(alignment: .bottom) {
+            if showDivider {
+                Divider().padding(.leading, 16)
+            }
+        }
     }
 
-    private func binding<Value>(_ keyPath: WritableKeyPath<Profile, Value>) -> Binding<Value> {
+    private func profileBinding<Value>(_ keyPath: WritableKeyPath<Profile, Value>) -> Binding<Value> {
         Binding(
-            get: { draft?[keyPath: keyPath] ?? store.state.profile[keyPath: keyPath] },
+            get: { store.state.profile[keyPath: keyPath] },
             set: { newValue in
-                guard var profile = draft else { return }
+                var profile = store.state.profile
                 profile[keyPath: keyPath] = newValue
-                draft = profile
+                store.updateProfile(profile)
             }
         )
     }
 
-    private func optionalBinding(_ keyPath: WritableKeyPath<Profile, String?>) -> Binding<String> {
+    private func optionalProfileBinding(_ keyPath: WritableKeyPath<Profile, String?>) -> Binding<String> {
         Binding(
-            get: { draft?[keyPath: keyPath] ?? store.state.profile[keyPath: keyPath] ?? "" },
+            get: { store.state.profile[keyPath: keyPath] ?? "" },
             set: { newValue in
-                guard var profile = draft else { return }
+                var profile = store.state.profile
                 let trimmed = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
                 profile[keyPath: keyPath] = trimmed.isEmpty ? nil : trimmed
-                draft = profile
+                store.updateProfile(profile)
             }
         )
     }
 
-    private func saveDraftIfNeeded() {
-        guard let draft else { return }
-        store.updateProfile(draft)
+    private var familyNameBinding: Binding<String> {
+        Binding(
+            get: { relationName },
+            set: { newValue in
+                relationName = newValue
+                saveFamilyBindingDraft()
+            }
+        )
+    }
+
+    private var familyPhoneBinding: Binding<String> {
+        Binding(
+            get: { relationPhone },
+            set: { newValue in
+                relationPhone = newValue
+                saveFamilyBindingDraft()
+            }
+        )
+    }
+
+    private func saveFamilyBindingDraft() {
         store.saveFamilyBindingDraft(
             relationName: relationName,
             relationPhone: relationPhone,
@@ -470,11 +651,138 @@ struct ProfileView: View {
         )
     }
 
-    private func reloadDraftFromStore() {
-        draft = store.state.profile
+    private func reloadBindingsFromStore() {
         relationName = store.state.familyBindingDraft?.relationName ?? ""
         relationPhone = store.state.familyBindingDraft?.relationPhone ?? ""
         inviteCodePlaceholder = store.state.familyBindingDraft?.inviteCodePlaceholder ?? "INVITE-准备中"
+    }
+
+    @ViewBuilder
+    private func editorSheet(_ editor: ProfileEditor) -> some View {
+        switch editor {
+        case .text(let field):
+            ProfileTextEditorSheet(
+                title: field.title,
+                text: textBinding(for: field),
+                placeholder: field.placeholder,
+                keyboardType: field.keyboardType
+            )
+        case .date(let field):
+            ProfileDateEditorSheet(
+                title: field.title,
+                date: dateBinding(for: field)
+            )
+        case .integer(let field):
+            ProfileIntegerEditorSheet(
+                title: field.title,
+                value: intBinding(for: field),
+                range: field.range,
+                step: field.step,
+                unit: field.unit
+            )
+        case .gender:
+            ProfileGenderEditorSheet(selection: pendingAwareTextBinding(profileBinding(\.gender), key: ProfilePendingFieldKey.gender))
+        }
+    }
+
+    private func textBinding(for field: TextEditorField) -> Binding<String> {
+        switch field {
+        case .name:
+            return pendingAwareTextBinding(profileBinding(\.name), key: ProfilePendingFieldKey.name)
+        case .height:
+            return pendingAwareTextBinding(optionalProfileBinding(\.heightCM), key: ProfilePendingFieldKey.height)
+        case .weight:
+            return pendingAwareTextBinding(optionalProfileBinding(\.weightKG), key: ProfilePendingFieldKey.weight)
+        case .allergy:
+            return pendingAwareTextBinding(optionalProfileBinding(\.allergyHistory), key: ProfilePendingFieldKey.allergy)
+        case .doctor:
+            return pendingAwareTextBinding(optionalProfileBinding(\.doctorContact), key: ProfilePendingFieldKey.doctor)
+        case .familyName:
+            return familyNameBinding
+        case .familyPhone:
+            return familyPhoneBinding
+        }
+    }
+
+    private func dateBinding(for field: DateEditorField) -> Binding<Date> {
+        switch field {
+        case .birthDate:
+            return pendingAwareDateBinding(profileBinding(\.birthDate), key: ProfilePendingFieldKey.birthDate)
+        case .lastPeriodDate:
+            return pendingAwareDateBinding(profileBinding(\.lastPeriodDate), key: ProfilePendingFieldKey.lastPeriodDate)
+        case .ivfTransferDate:
+            return pendingAwareDateBinding(profileBinding(\.ivfTransferDate), key: ProfilePendingFieldKey.ivfTransferDate)
+        case .firstPositiveDate:
+            return pendingAwareDateBinding(profileBinding(\.firstPositiveDate), key: ProfilePendingFieldKey.firstPositiveDate)
+        }
+    }
+
+    private func intBinding(for field: IntegerEditorField) -> Binding<Int> {
+        switch field {
+        case .stepsGoal:
+            return profileBinding(\.stepsGoal)
+        case .waterGoal:
+            return profileBinding(\.waterGoalML)
+        }
+    }
+
+    private func pendingAwareTextBinding(_ base: Binding<String>, key: String) -> Binding<String> {
+        Binding(
+            get: { base.wrappedValue },
+            set: { newValue in
+                base.wrappedValue = newValue
+                let isBlank = newValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                if isBlank {
+                    store.markProfileFieldPending(key)
+                } else {
+                    store.markProfileFieldFilled(key)
+                }
+            }
+        )
+    }
+
+    private func pendingAwareDateBinding(_ base: Binding<Date>, key: String) -> Binding<Date> {
+        Binding(
+            get: { base.wrappedValue },
+            set: { newValue in
+                base.wrappedValue = newValue
+                store.markProfileFieldFilled(key)
+            }
+        )
+    }
+
+    private func pendingText(_ key: String, raw: String?) -> String {
+        if store.isProfileFieldPending(key) {
+            return "待填"
+        }
+        return displayText(raw, fallback: "待填")
+    }
+
+    private func pendingDateText(_ key: String, date: Date) -> String {
+        if store.isProfileFieldPending(key) {
+            return "待填"
+        }
+        return chineseDate(date)
+    }
+
+    private func pendingReminderValue(_ key: String, raw: String) -> String {
+        if store.isProfileFieldPending(key) {
+            return "待填"
+        }
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? "待填" : trimmed
+    }
+
+    private func displayText(_ raw: String?, fallback: String = "待填") -> String {
+        let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? fallback : trimmed
+    }
+
+    private func chineseDate(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.dateFormat = "yyyy年M月d日"
+        return formatter.string(from: date)
     }
 
     @MainActor
@@ -484,7 +792,7 @@ struct ProfileView: View {
         defer { isResettingAllData = false }
 
         let result = await store.resetAllDataToFreshInstall(mode: mode)
-        reloadDraftFromStore()
+        reloadBindingsFromStore()
 
         switch result {
         case .appOnly:
@@ -495,6 +803,200 @@ struct ProfileView: View {
             store.showGlobalBanner(message: "App 数据已清空；未授予提醒事项权限，系统提醒可能仍保留。", level: .info)
         case .appClearedSystemFailed(let reason):
             store.showGlobalBanner(message: "App 数据已清空；系统提醒清理失败：\(reason)", level: .info)
+        }
+    }
+}
+
+private struct ProfileTextEditorSheet: View {
+    let title: String
+    @Binding var text: String
+    let placeholder: String
+    let keyboardType: UIKeyboardType
+    @Environment(\.dismiss) private var dismiss
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        NavigationStack {
+            VStack(alignment: .leading, spacing: 14) {
+                Text("修改后会自动保存")
+                    .font(.footnote)
+                    .foregroundStyle(AppTheme.textSecondary)
+                    .padding(.horizontal, 16)
+
+                TextField(placeholder, text: $text)
+                    .font(.title3)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 14)
+                    .background(Color.white)
+                    .overlay(
+                        Rectangle()
+                            .fill(Color(hex: "E5E5EA"))
+                            .frame(height: 0.5),
+                        alignment: .bottom
+                    )
+                    .keyboardType(keyboardType)
+                    .focused($focused)
+                    .submitLabel(.done)
+                    .onSubmit {
+                        dismiss()
+                    }
+
+                Spacer()
+            }
+            .padding(.top, 12)
+            .background(Color(hex: "EFEFF4").ignoresSafeArea())
+            .navigationTitle(title)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("完成") {
+                        dismiss()
+                    }
+                }
+            }
+            .onAppear {
+                focused = true
+            }
+        }
+    }
+}
+
+private struct ProfileDateEditorSheet: View {
+    let title: String
+    @Binding var date: Date
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            VStack(alignment: .leading, spacing: 14) {
+                Text("修改后会自动保存")
+                    .font(.footnote)
+                    .foregroundStyle(AppTheme.textSecondary)
+                    .padding(.horizontal, 16)
+
+                DatePicker(
+                    "",
+                    selection: $date,
+                    displayedComponents: .date
+                )
+                .labelsHidden()
+                .datePickerStyle(.graphical)
+                .environment(\.locale, Locale(identifier: "zh_CN"))
+                .padding(.horizontal, 10)
+
+                Spacer()
+            }
+            .padding(.top, 10)
+            .background(Color(hex: "EFEFF4").ignoresSafeArea())
+            .navigationTitle(title)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("完成") {
+                        dismiss()
+                    }
+                }
+            }
+        }
+    }
+}
+
+private struct ProfileIntegerEditorSheet: View {
+    let title: String
+    @Binding var value: Int
+    let range: ClosedRange<Int>
+    let step: Int
+    let unit: String
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 18) {
+                Text("修改后会自动保存")
+                    .font(.footnote)
+                    .foregroundStyle(AppTheme.textSecondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                Text("\(value) \(unit)")
+                    .font(.system(size: 34, weight: .semibold))
+                    .foregroundStyle(AppTheme.textPrimary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                Stepper(
+                    "",
+                    value: $value,
+                    in: range,
+                    step: step
+                )
+                .labelsHidden()
+                .tint(AppTheme.actionPrimary)
+
+                Spacer()
+            }
+            .padding(16)
+            .background(Color(hex: "EFEFF4").ignoresSafeArea())
+            .navigationTitle(title)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("完成") {
+                        dismiss()
+                    }
+                }
+            }
+        }
+    }
+}
+
+private struct ProfileGenderEditorSheet: View {
+    @Binding var selection: String
+    @Environment(\.dismiss) private var dismiss
+
+    private let choices = ["女", "男"]
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 0) {
+                ForEach(Array(choices.enumerated()), id: \.element) { index, option in
+                    Button {
+                        selection = option
+                        dismiss()
+                    } label: {
+                        HStack {
+                            Text(option)
+                                .font(.system(size: 19, weight: .regular))
+                                .foregroundStyle(Color(hex: "1C1C1E"))
+                            Spacer()
+                            if selection == option {
+                                Image(systemName: "checkmark")
+                                    .font(.system(size: 16, weight: .semibold))
+                                    .foregroundStyle(AppTheme.actionPrimary)
+                            }
+                        }
+                        .frame(minHeight: 56)
+                        .padding(.horizontal, 16)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .overlay(alignment: .bottom) {
+                        if index < choices.count - 1 {
+                            Divider().padding(.leading, 16)
+                        }
+                    }
+                }
+            }
+            .background(Color.white)
+            .padding(.top, 10)
+            .background(Color(hex: "EFEFF4").ignoresSafeArea())
+            .navigationTitle("性别")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("关闭") {
+                        dismiss()
+                    }
+                }
+            }
         }
     }
 }

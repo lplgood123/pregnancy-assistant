@@ -228,6 +228,63 @@ struct AIBackendChatService {
         var model: String?
     }
 
+    struct DailyGuideRequestBody: Codable {
+        var date: String
+        var gestational_text: String
+        var profile_context: String
+        var model: String?
+    }
+
+    struct DailyGuideResponse: Codable {
+        var date_key: String?
+        var week_guide: String
+        var baby_change: String
+        var mom_change: String
+        var source: String?
+    }
+
+    struct PanelGroupRequestBody: Codable {
+        var ocr_texts: [String]
+        var now: String
+        var model: String?
+    }
+
+    struct GroupedPanelRecord: Codable {
+        var check_type: String?
+        var check_date: String
+        var hcg: Double
+        var progesterone: Double
+        var estradiol: Double
+        var note: String?
+        var source_indexes: [Int]?
+    }
+
+    struct PanelGroupResponse: Codable {
+        var records: [GroupedPanelRecord]
+        var failed_indexes: [Int]
+    }
+
+    struct IngredientAnalyzeRequestBody: Codable {
+        var ocr_texts: [String]
+        var profile_context: String
+        var model: String?
+    }
+
+    struct IngredientEvidenceItem: Codable {
+        var name: String
+        var reason: String
+    }
+
+    struct IngredientAnalyzeResponse: Codable {
+        var overall: String
+        var usable: [IngredientEvidenceItem]
+        var caution: [IngredientEvidenceItem]
+        var avoid: [IngredientEvidenceItem]
+        var summary: String
+        var alternatives: [String]
+        var disclaimer: String
+    }
+
     struct GenericTextResponse: Codable {
         var content: String?
         var reply: String?
@@ -428,6 +485,167 @@ struct AIBackendChatService {
             kind: .unknown,
             userMessage: "请求失败，请稍后重试。",
             rawMessage: "No summary endpoint candidates available.",
+            httpStatus: nil
+        )
+    }
+
+    func sendDailyGuide(
+        config: AIConfig,
+        date: String,
+        gestationalText: String,
+        profileContext: String
+    ) async throws -> DailyGuideResponse {
+        let body = DailyGuideRequestBody(
+            date: date,
+            gestational_text: gestationalText,
+            profile_context: profileContext,
+            model: config.model
+        )
+        let candidates = parseBaseURLs(config.baseURL)
+        guard !candidates.isEmpty else {
+            throw AIRequestError(
+                kind: .client,
+                userMessage: "AI 后端地址为空，请检查配置。",
+                rawMessage: config.baseURL,
+                httpStatus: nil
+            )
+        }
+
+        var lastError: AIRequestError?
+        let requestID = shortRequestID()
+        for (index, baseURL) in candidates.enumerated() {
+            do {
+                let raw = try await requestTextWithPolicy(
+                    config: config,
+                    endpoint: buildDailyGuideEndpoint(baseURL),
+                    body: body,
+                    policy: primaryPolicy,
+                    phase: "daily-guide",
+                    requestID: requestID,
+                    onStage: nil
+                )
+                return try decodeDailyGuideResponse(raw, fallbackDate: date)
+            } catch {
+                let mapped = AIRequestError.map(error)
+                lastError = mapped
+                let canFallback = index < candidates.count - 1 && shouldFallbackToNextEndpoint(for: mapped)
+                if canFallback {
+                    continue
+                }
+                throw mapped
+            }
+        }
+
+        throw lastError ?? AIRequestError(
+            kind: .unknown,
+            userMessage: "获取孕期指南失败，请稍后重试。",
+            rawMessage: "No daily-guide endpoint candidates available.",
+            httpStatus: nil
+        )
+    }
+
+    func groupPregnancyPanelReports(
+        config: AIConfig,
+        ocrTexts: [String],
+        nowISO8601: String
+    ) async throws -> PanelGroupResponse {
+        let body = PanelGroupRequestBody(
+            ocr_texts: ocrTexts,
+            now: nowISO8601,
+            model: config.model
+        )
+        let candidates = parseBaseURLs(config.baseURL)
+        guard !candidates.isEmpty else {
+            throw AIRequestError(
+                kind: .client,
+                userMessage: "AI 后端地址为空，请检查配置。",
+                rawMessage: config.baseURL,
+                httpStatus: nil
+            )
+        }
+
+        var lastError: AIRequestError?
+        let requestID = shortRequestID()
+        for (index, baseURL) in candidates.enumerated() {
+            do {
+                let raw = try await requestTextWithPolicy(
+                    config: config,
+                    endpoint: buildReportGroupEndpoint(baseURL),
+                    body: body,
+                    policy: primaryPolicy,
+                    phase: "panel-group",
+                    requestID: requestID,
+                    onStage: nil
+                )
+                return try decodePanelGroupResponse(raw)
+            } catch {
+                let mapped = AIRequestError.map(error)
+                lastError = mapped
+                let canFallback = index < candidates.count - 1 && shouldFallbackToNextEndpoint(for: mapped)
+                if canFallback {
+                    continue
+                }
+                throw mapped
+            }
+        }
+
+        throw lastError ?? AIRequestError(
+            kind: .unknown,
+            userMessage: "报告分组失败，请稍后重试。",
+            rawMessage: "No panel-group endpoint candidates available.",
+            httpStatus: nil
+        )
+    }
+
+    func analyzeIngredients(
+        config: AIConfig,
+        ocrTexts: [String],
+        profileContext: String
+    ) async throws -> IngredientAnalyzeResponse {
+        let body = IngredientAnalyzeRequestBody(
+            ocr_texts: ocrTexts,
+            profile_context: profileContext,
+            model: config.model
+        )
+        let candidates = parseBaseURLs(config.baseURL)
+        guard !candidates.isEmpty else {
+            throw AIRequestError(
+                kind: .client,
+                userMessage: "AI 后端地址为空，请检查配置。",
+                rawMessage: config.baseURL,
+                httpStatus: nil
+            )
+        }
+
+        var lastError: AIRequestError?
+        let requestID = shortRequestID()
+        for (index, baseURL) in candidates.enumerated() {
+            do {
+                let raw = try await requestTextWithPolicy(
+                    config: config,
+                    endpoint: buildIngredientAnalyzeEndpoint(baseURL),
+                    body: body,
+                    policy: primaryPolicy,
+                    phase: "ingredient",
+                    requestID: requestID,
+                    onStage: nil
+                )
+                return try decodeIngredientAnalyzeResponse(raw)
+            } catch {
+                let mapped = AIRequestError.map(error)
+                lastError = mapped
+                let canFallback = index < candidates.count - 1 && shouldFallbackToNextEndpoint(for: mapped)
+                if canFallback {
+                    continue
+                }
+                throw mapped
+            }
+        }
+
+        throw lastError ?? AIRequestError(
+            kind: .unknown,
+            userMessage: "成分识别失败，请稍后重试。",
+            rawMessage: "No ingredient endpoint candidates available.",
             httpStatus: nil
         )
     }
@@ -919,6 +1137,96 @@ struct AIBackendChatService {
         )
     }
 
+    private func buildDailyGuideEndpoint(_ input: String) -> String {
+        buildEndpoint(
+            input,
+            path: "/api/ai/guide/daily",
+            suffixes: ["/api/ai/guide/daily", "/ai/guide/daily", "/guide/daily"]
+        )
+    }
+
+    private func buildReportGroupEndpoint(_ input: String) -> String {
+        buildEndpoint(
+            input,
+            path: "/api/ai/report/pregnancy-panel/group",
+            suffixes: [
+                "/api/ai/report/pregnancy-panel/group",
+                "/ai/report/pregnancy-panel/group",
+                "/report/pregnancy-panel/group"
+            ]
+        )
+    }
+
+    private func buildIngredientAnalyzeEndpoint(_ input: String) -> String {
+        buildEndpoint(
+            input,
+            path: "/api/ai/ingredient/analyze",
+            suffixes: ["/api/ai/ingredient/analyze", "/ai/ingredient/analyze", "/ingredient/analyze"]
+        )
+    }
+
+    private func decodeDailyGuideResponse(_ raw: String, fallbackDate: String) throws -> DailyGuideResponse {
+        if let data = raw.data(using: .utf8),
+           let decoded = try? JSONDecoder().decode(DailyGuideResponse.self, from: data) {
+            return DailyGuideResponse(
+                date_key: decoded.date_key ?? fallbackDate,
+                week_guide: decoded.week_guide,
+                baby_change: decoded.baby_change,
+                mom_change: decoded.mom_change,
+                source: decoded.source ?? "ai"
+            )
+        }
+
+        if let data = raw.data(using: .utf8),
+           let object = try? JSONSerialization.jsonObject(with: data, options: []),
+           let map = object as? [String: Any] {
+            let weekGuide = (map["week_guide"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let babyChange = (map["baby_change"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let momChange = (map["mom_change"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return DailyGuideResponse(
+                date_key: (map["date_key"] as? String) ?? fallbackDate,
+                week_guide: weekGuide,
+                baby_change: babyChange,
+                mom_change: momChange,
+                source: (map["source"] as? String) ?? "ai"
+            )
+        }
+
+        throw AIRequestError(
+            kind: .server,
+            userMessage: "孕期指南解析失败，请稍后重试。",
+            rawMessage: raw,
+            httpStatus: nil
+        )
+    }
+
+    private func decodePanelGroupResponse(_ raw: String) throws -> PanelGroupResponse {
+        if let data = raw.data(using: .utf8),
+           let decoded = try? JSONDecoder().decode(PanelGroupResponse.self, from: data) {
+            return decoded
+        }
+        throw AIRequestError(
+            kind: .server,
+            userMessage: "报告识别结果解析失败，请重试。",
+            rawMessage: raw,
+            httpStatus: nil
+        )
+    }
+
+    private func decodeIngredientAnalyzeResponse(_ raw: String) throws -> IngredientAnalyzeResponse {
+        if let data = raw.data(using: .utf8),
+           let decoded = try? JSONDecoder().decode(IngredientAnalyzeResponse.self, from: data) {
+            return decoded
+        }
+
+        throw AIRequestError(
+            kind: .server,
+            userMessage: "成分识别结果解析失败，请重试。",
+            rawMessage: raw,
+            httpStatus: nil
+        )
+    }
+
     private func buildEndpoint(_ input: String, path: String, suffixes: [String]) -> String {
         let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
         let lower = trimmed.lowercased()
@@ -1210,12 +1518,12 @@ struct ReminderSettingsView: View {
             enableSystemReminders = config.enableSystemReminders
             didLoad = true
         }
-        .onChange(of: wakeUpTime) { _, _ in persistReminderConfigIfReady() }
-        .onChange(of: breakfastTime) { _, _ in persistReminderConfigIfReady() }
-        .onChange(of: lunchTime) { _, _ in persistReminderConfigIfReady() }
-        .onChange(of: dinnerTime) { _, _ in persistReminderConfigIfReady() }
-        .onChange(of: sleepTime) { _, _ in persistReminderConfigIfReady() }
-        .onChange(of: enableSystemReminders) { _, _ in persistReminderConfigIfReady() }
+        .onChange(of: wakeUpTime) { _ in persistReminderConfigIfReady() }
+        .onChange(of: breakfastTime) { _ in persistReminderConfigIfReady() }
+        .onChange(of: lunchTime) { _ in persistReminderConfigIfReady() }
+        .onChange(of: dinnerTime) { _ in persistReminderConfigIfReady() }
+        .onChange(of: sleepTime) { _ in persistReminderConfigIfReady() }
+        .onChange(of: enableSystemReminders) { _ in persistReminderConfigIfReady() }
     }
 
     private func settingField(title: String, selection: Binding<Date>) -> some View {

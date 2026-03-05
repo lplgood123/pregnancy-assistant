@@ -63,102 +63,123 @@ struct CheckListView: View {
     }
 
     @EnvironmentObject private var store: PregnancyStore
-    @State private var selectedSegment: RecordSegment = .medication
+    private let embeddedInParentNavigation: Bool
+    @State private var selectedSegment: RecordSegment
     @State private var selectedCheckType: CheckType?
     @State private var showAddMedication = false
     @State private var showAddCheck = false
     @State private var showAddAppointment = false
     @State private var editingAppointment: AppointmentItem?
+    @State private var editingCheckRecord: CheckRecord?
     @State private var pendingDelete: PendingDelete?
     @State private var collapsedPastPeriods: Set<TimePeriod> = []
     @State private var expandedPastPeriods: Set<TimePeriod> = []
     @State private var selectedMedicationDate: Date = Date()
 
+    init(initialSegment: RecordSegment = .medication, embeddedInParentNavigation: Bool = false) {
+        self.embeddedInParentNavigation = embeddedInParentNavigation
+        _selectedSegment = State(initialValue: initialSegment)
+    }
+
     var body: some View {
-        NavigationStack {
-            ZStack {
-                AppTheme.background.ignoresSafeArea()
+        Group {
+            if embeddedInParentNavigation {
+                checklistBody
+            } else {
+                NavigationStack {
+                    checklistBody
+                }
+            }
+        }
+        .sheet(isPresented: $showAddMedication) {
+            RecordAddView(initialTab: .medication)
+                .environmentObject(store)
+        }
+        .sheet(isPresented: $showAddCheck) {
+            RecordAddView(initialTab: .check)
+                .environmentObject(store)
+        }
+        .sheet(item: $editingCheckRecord) { item in
+            RecordAddView(initialTab: .check, initialCheckType: item.type, editingCheckRecord: item)
+                .environmentObject(store)
+        }
+        .sheet(isPresented: $showAddAppointment) {
+            AppointmentEditorSheet(appointment: nil) { item in
+                store.saveAppointment(item)
+            }
+        }
+        .sheet(item: $editingAppointment) { item in
+            AppointmentEditorSheet(appointment: item) { edited in
+                store.saveAppointment(edited)
+            }
+        }
+        .alert("确认删除", isPresented: Binding(
+            get: { pendingDelete != nil },
+            set: { shown in
+                if !shown { pendingDelete = nil }
+            }
+        )) {
+            Button("取消", role: .cancel) {
+                pendingDelete = nil
+            }
+            Button("删除", role: .destructive) {
+                confirmDelete()
+            }
+        } message: {
+            Text(pendingDelete?.message ?? "")
+        }
+    }
 
-                VStack(alignment: .leading, spacing: 12) {
-                    header
-                        .padding(.horizontal)
+    private var checklistBody: some View {
+        ZStack {
+            AppTheme.background.ignoresSafeArea()
 
-                    Picker("记录分段", selection: $selectedSegment) {
-                        ForEach(RecordSegment.allCases) { segment in
-                            Text(segment.rawValue).tag(segment)
-                        }
-                    }
-                    .pickerStyle(.segmented)
+            VStack(alignment: .leading, spacing: 12) {
+                header
                     .padding(.horizontal)
 
-                    TabView(selection: $selectedSegment) {
-                        segmentPage { medicationSection }
-                            .tag(RecordSegment.medication)
-                        segmentPage { checkSection }
-                            .tag(RecordSegment.check)
-                        segmentPage { appointmentSection }
-                            .tag(RecordSegment.appointment)
+                Picker("记录分段", selection: $selectedSegment) {
+                    ForEach(RecordSegment.allCases) { segment in
+                        Text(segment.rawValue).tag(segment)
                     }
-                    .tabViewStyle(.page(indexDisplayMode: .never))
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
-                .padding(.top, 12)
-            }
-            .navigationBarTitleDisplayMode(.inline)
-            .safeAreaInset(edge: .bottom) {
-                VStack(spacing: 0) {
-                    Button(bottomButtonTitle) {
-                        handleBottomAction()
-                    }
-                    .font(.subheadline.weight(.semibold))
-                    .frame(maxWidth: .infinity)
-                    .frame(minHeight: 44)
-                    .background(AppTheme.actionPrimary)
-                    .foregroundStyle(.white)
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
-                    .padding(.horizontal)
-                    .padding(.top, 8)
-                    .padding(.bottom, 8)
+                .pickerStyle(.segmented)
+                .padding(.horizontal)
 
-                    Color.clear
-                        .frame(height: AppLayout.dockBottomInsetAboveTabBar)
-                        .allowsHitTesting(false)
+                TabView(selection: $selectedSegment) {
+                    segmentPage { medicationSection }
+                        .tag(RecordSegment.medication)
+                    segmentPage { checkSection }
+                        .tag(RecordSegment.check)
+                    segmentPage { appointmentSection }
+                        .tag(RecordSegment.appointment)
                 }
-                .background(AppTheme.background.allowsHitTesting(false))
+                .tabViewStyle(.page(indexDisplayMode: .never))
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            .sheet(isPresented: $showAddMedication) {
-                RecordAddView(initialTab: .medication)
-                    .environmentObject(store)
-            }
-            .sheet(isPresented: $showAddCheck) {
-                RecordAddView(initialTab: .check)
-                    .environmentObject(store)
-            }
-            .sheet(isPresented: $showAddAppointment) {
-                AppointmentEditorSheet(appointment: nil) { item in
-                    store.saveAppointment(item)
+            .padding(.top, 12)
+        }
+        .navigationBarTitleDisplayMode(.inline)
+        .safeAreaInset(edge: .bottom) {
+            VStack(spacing: 0) {
+                Button(bottomButtonTitle) {
+                    handleBottomAction()
                 }
+                .font(.subheadline.weight(.semibold))
+                .frame(maxWidth: .infinity)
+                .frame(minHeight: 44)
+                .background(AppTheme.actionPrimary)
+                .foregroundStyle(.white)
+                .clipShape(RoundedRectangle(cornerRadius: 12))
+                .padding(.horizontal)
+                .padding(.top, 8)
+                .padding(.bottom, 8)
+
+                Color.clear
+                    .frame(height: AppLayout.dockBottomInsetAboveTabBar)
+                    .allowsHitTesting(false)
             }
-            .sheet(item: $editingAppointment) { item in
-                AppointmentEditorSheet(appointment: item) { edited in
-                    store.saveAppointment(edited)
-                }
-            }
-            .alert("确认删除", isPresented: Binding(
-                get: { pendingDelete != nil },
-                set: { shown in
-                    if !shown { pendingDelete = nil }
-                }
-            )) {
-                Button("取消", role: .cancel) {
-                    pendingDelete = nil
-                }
-                Button("删除", role: .destructive) {
-                    confirmDelete()
-                }
-            } message: {
-                Text(pendingDelete?.message ?? "")
-            }
+            .background(AppTheme.background.allowsHitTesting(false))
         }
     }
 
@@ -462,6 +483,16 @@ struct CheckListView: View {
                         .buttonStyle(.plain)
 
                         HStack {
+                            Button("编辑") {
+                                editingCheckRecord = record
+                            }
+                            .font(.caption.weight(.semibold))
+                            .padding(.horizontal, 10)
+                            .frame(minHeight: 44)
+                            .background(AppTheme.statusInfoSoft)
+                            .foregroundStyle(AppTheme.statusInfo)
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
+
                             Spacer()
                             Button("删除") {
                                 pendingDelete = .checkRecord(record.id)

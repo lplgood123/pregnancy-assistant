@@ -14,6 +14,7 @@ struct OnboardingFlowView: View {
         sleepTime: "22:30",
         minutesBefore: 0
     )
+    @State private var wakeUpTime = Date()
     @State private var breakfastTime = Date()
     @State private var lunchTime = Date()
     @State private var dinnerTime = Date()
@@ -97,6 +98,7 @@ struct OnboardingFlowView: View {
 
                     fieldRow(title: "姓名", text: binding(\.name), placeholder: "例如：小李")
                     dateRow(title: "末次月经", date: binding(\.lastPeriodDate))
+                    timeRow(title: "起床时间", selection: $wakeUpTime)
                     timeRow(title: "早餐时间", selection: $breakfastTime)
                     timeRow(title: "午餐时间", selection: $lunchTime)
                     timeRow(title: "晚餐时间", selection: $dinnerTime)
@@ -142,6 +144,7 @@ struct OnboardingFlowView: View {
                     confirmRow(label: "姓名", value: profileDraft.name)
                     confirmRow(label: "当前孕周", value: gestationalText(for: profileDraft.lastPeriodDate))
                     confirmRow(label: "预产期", value: formatDate(dueDate(for: profileDraft.lastPeriodDate)))
+                    confirmRow(label: "起床提醒", value: reminderDraft.wakeUpTime)
                     confirmRow(label: "早餐提醒", value: reminderDraft.breakfastTime)
                     confirmRow(label: "午餐提醒", value: reminderDraft.lunchTime)
                     confirmRow(label: "晚餐提醒", value: reminderDraft.dinnerTime)
@@ -209,6 +212,7 @@ struct OnboardingFlowView: View {
             return false
         }
 
+        reminderDraft.wakeUpTime = hhmmFromDate(wakeUpTime)
         reminderDraft.breakfastTime = hhmmFromDate(breakfastTime)
         reminderDraft.lunchTime = hhmmFromDate(lunchTime)
         reminderDraft.dinnerTime = hhmmFromDate(dinnerTime)
@@ -324,6 +328,7 @@ struct OnboardingFlowView: View {
         didLoad = true
         profileDraft = store.state.profile
         reminderDraft = store.currentReminderConfig()
+        wakeUpTime = dateFromHHmm(reminderDraft.wakeUpTime)
         breakfastTime = dateFromHHmm(reminderDraft.breakfastTime)
         lunchTime = dateFromHHmm(reminderDraft.lunchTime)
         dinnerTime = dateFromHHmm(reminderDraft.dinnerTime)
