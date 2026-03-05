@@ -2768,7 +2768,7 @@ final class PregnancyStore: ObservableObject {
     func quickCommandPrompts() -> [QuickCommand] {
         [
             QuickCommand(title: "今日安排", prompt: "请汇总我今天需要注意的安排：用药、打针、回诊和其他提醒。", icon: "calendar.badge.clock"),
-            QuickCommand(title: "记录报告单", prompt: "我想记录报告单，请引导我上传检查报告图片或手动填写。", icon: "doc.text.viewfinder"),
+            QuickCommand(title: "记录报告单", prompt: "我想记录报告单。你可以让我直接上传报告图片识别，也可以让我直接告诉你 HCG、孕酮、雌二醇和日期来记录。", icon: "doc.text.viewfinder"),
             QuickCommand(title: "用药调整", prompt: "我有用药要调整，帮我记录。", icon: "pills"),
             QuickCommand(title: "成分识别", prompt: "帮我识别这个商品/食品成分，判断孕期是否可用。", icon: "leaf"),
             QuickCommand(title: "加复查预约", prompt: "我想新增一个复查预约，帮我记录。", icon: "calendar"),

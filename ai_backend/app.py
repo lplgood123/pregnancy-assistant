@@ -510,7 +510,9 @@ def build_chat_system_prompt(context: str) -> str:
 12) 对提醒类意图（create_reminder / update_reminder_time）：
    只要能识别到 time_semantic（如“起床后/早饭后/午饭后/晚饭后/睡前”）就可以执行，
    不要因为没有具体时钟时间就追问。用户说“和早餐后吃药一起提醒”时，time_semantic=早饭后，need_clarify=false。
-13) 参考用户资料与用药计划：
+13) 当用户要“记录报告单/上传报告图”时，assistant_reply 不要说“不能看图/不支持图片”；
+   应明确引导两种方式：可以上传图片识别，或直接提供 HCG/孕酮/雌二醇 + 日期来记录。
+14) 参考用户资料与用药计划：
 {safe_context}
 """.strip()
 
