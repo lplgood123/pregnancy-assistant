@@ -37,7 +37,7 @@ struct AIRequestError: LocalizedError {
         }
         return AIRequestError(
             kind: .unknown,
-            userMessage: "请求失败，请稍后重试。",
+            userMessage: "有点小波动，我们稍后再试一次。",
             rawMessage: error.localizedDescription,
             httpStatus: nil
         )
@@ -48,35 +48,35 @@ struct AIRequestError: LocalizedError {
         case .timedOut:
             return AIRequestError(
                 kind: .timeout,
-                userMessage: "AI 服务器响应超时，请稍后重试。",
+                userMessage: "AI 回复有点慢，我们稍后再试一次。",
                 rawMessage: urlError.localizedDescription,
                 httpStatus: nil
             )
         case .cannotFindHost, .dnsLookupFailed:
             return AIRequestError(
                 kind: .dns,
-                userMessage: "服务域名解析失败，请稍后重试。",
+                userMessage: "暂时找不到服务地址，请稍后再试。",
                 rawMessage: urlError.localizedDescription,
                 httpStatus: nil
             )
         case .notConnectedToInternet:
             return AIRequestError(
                 kind: .network,
-                userMessage: "网络不可用，请检查蜂窝网络或 Wi-Fi。",
+                userMessage: "当前网络不可用，请先检查 Wi-Fi 或蜂窝网络。",
                 rawMessage: urlError.localizedDescription,
                 httpStatus: nil
             )
         case .networkConnectionLost, .cannotConnectToHost:
             return AIRequestError(
                 kind: .network,
-                userMessage: "暂时连不上 AI 服务，请稍后重试；若持续失败，请切换网络后再试。",
+                userMessage: "暂时连不上 AI 服务，稍后再试；若连续失败，建议切换网络。",
                 rawMessage: urlError.localizedDescription,
                 httpStatus: nil
             )
         default:
             return AIRequestError(
                 kind: .network,
-                userMessage: "网络连接异常，请稍后重试。",
+                userMessage: "网络连接有点不稳定，稍后再试一次。",
                 rawMessage: urlError.localizedDescription,
                 httpStatus: nil
             )
@@ -88,7 +88,7 @@ struct AIRequestError: LocalizedError {
         if normalizedRaw.contains("invalid api key") || normalizedRaw.contains("authorized_error") {
             return AIRequestError(
                 kind: .unauthorized,
-                userMessage: "鉴权失败，请检查后端 Token 或 Minimax Key 配置。",
+                userMessage: "服务鉴权失败，请检查后端 Token 或 Minimax Key。",
                 rawMessage: rawMessage,
                 httpStatus: status
             )
@@ -97,21 +97,21 @@ struct AIRequestError: LocalizedError {
         case 401:
             return AIRequestError(
                 kind: .unauthorized,
-                userMessage: "鉴权失败，请检查后端 Token 或 Minimax Key 配置。",
+                userMessage: "服务鉴权失败，请检查后端 Token 或 Minimax Key。",
                 rawMessage: rawMessage,
                 httpStatus: status
             )
         case 502, 503, 504:
             return AIRequestError(
                 kind: .server,
-                userMessage: "AI 服务暂时繁忙，请稍后重试。",
+                userMessage: "AI 服务有点忙，我们稍后再试。",
                 rawMessage: rawMessage,
                 httpStatus: status
             )
         case 400, 403, 404:
             return AIRequestError(
                 kind: .client,
-                userMessage: "请求参数或服务地址异常，请检查配置后重试。",
+                userMessage: "配置看起来有异常，请检查服务地址和参数后再试。",
                 rawMessage: rawMessage,
                 httpStatus: status
             )
@@ -119,14 +119,14 @@ struct AIRequestError: LocalizedError {
             if (500...599).contains(status) {
                 return AIRequestError(
                     kind: .server,
-                    userMessage: "AI 服务异常，请稍后重试。",
+                    userMessage: "AI 服务暂时异常，稍后再试一次。",
                     rawMessage: rawMessage,
                     httpStatus: status
                 )
             }
             return AIRequestError(
                 kind: .unknown,
-                userMessage: "请求失败，请稍后重试。",
+                userMessage: "有点小波动，我们稍后再试一次。",
                 rawMessage: rawMessage,
                 httpStatus: status
             )
@@ -171,7 +171,7 @@ struct ChatMessage: Identifiable {
 
 private func assistantDisplayText(from raw: String) -> String {
     guard let action = AIParse.parse(raw) else {
-        return "已收到，但解析失败，请换种说法。"
+        return "我收到了，但这句我没完全听懂，换个说法我再帮你。"
     }
     if action.needClarify {
         return action.clarifyQuestion.isEmpty ? "还需要一点信息～" : action.clarifyQuestion
@@ -354,7 +354,7 @@ struct AIBackendChatService {
         guard !baseCandidates.isEmpty else {
             throw AIRequestError(
                 kind: .client,
-                userMessage: "AI 后端地址为空，请检查配置。",
+                userMessage: "还没配置 AI 后端地址，请先补充配置。",
                 rawMessage: config.baseURL,
                 httpStatus: nil
             )
@@ -429,7 +429,7 @@ struct AIBackendChatService {
 
         throw lastError ?? AIRequestError(
             kind: .unknown,
-            userMessage: "请求失败，请稍后重试。",
+            userMessage: "有点小波动，我们稍后再试一次。",
             rawMessage: "No endpoint candidates available.",
             httpStatus: nil
         )
@@ -442,7 +442,7 @@ struct AIBackendChatService {
         guard !candidates.isEmpty else {
             throw AIRequestError(
                 kind: .client,
-                userMessage: "AI 后端地址为空，请检查配置。",
+                userMessage: "还没配置 AI 后端地址，请先补充配置。",
                 rawMessage: config.baseURL,
                 httpStatus: nil
             )
@@ -464,7 +464,7 @@ struct AIBackendChatService {
                 if normalized.isEmpty {
                     throw AIRequestError(
                         kind: .server,
-                        userMessage: "首页总结为空，请稍后重试。",
+                        userMessage: "这次没拿到首页总结，我们稍后再试。",
                         rawMessage: "home summary empty",
                         httpStatus: nil
                     )
@@ -483,7 +483,7 @@ struct AIBackendChatService {
 
         throw lastError ?? AIRequestError(
             kind: .unknown,
-            userMessage: "请求失败，请稍后重试。",
+            userMessage: "有点小波动，我们稍后再试一次。",
             rawMessage: "No summary endpoint candidates available.",
             httpStatus: nil
         )
@@ -505,7 +505,7 @@ struct AIBackendChatService {
         guard !candidates.isEmpty else {
             throw AIRequestError(
                 kind: .client,
-                userMessage: "AI 后端地址为空，请检查配置。",
+                userMessage: "还没配置 AI 后端地址，请先补充配置。",
                 rawMessage: config.baseURL,
                 httpStatus: nil
             )
@@ -538,7 +538,7 @@ struct AIBackendChatService {
 
         throw lastError ?? AIRequestError(
             kind: .unknown,
-            userMessage: "获取孕期指南失败，请稍后重试。",
+            userMessage: "当天内容拉取失败，请稍后再试。",
             rawMessage: "No daily-guide endpoint candidates available.",
             httpStatus: nil
         )
@@ -558,7 +558,7 @@ struct AIBackendChatService {
         guard !candidates.isEmpty else {
             throw AIRequestError(
                 kind: .client,
-                userMessage: "AI 后端地址为空，请检查配置。",
+                userMessage: "还没配置 AI 后端地址，请先补充配置。",
                 rawMessage: config.baseURL,
                 httpStatus: nil
             )
@@ -591,7 +591,7 @@ struct AIBackendChatService {
 
         throw lastError ?? AIRequestError(
             kind: .unknown,
-            userMessage: "报告分组失败，请稍后重试。",
+            userMessage: "报告分组暂时失败，请再试一次。",
             rawMessage: "No panel-group endpoint candidates available.",
             httpStatus: nil
         )
@@ -611,7 +611,7 @@ struct AIBackendChatService {
         guard !candidates.isEmpty else {
             throw AIRequestError(
                 kind: .client,
-                userMessage: "AI 后端地址为空，请检查配置。",
+                userMessage: "还没配置 AI 后端地址，请先补充配置。",
                 rawMessage: config.baseURL,
                 httpStatus: nil
             )
@@ -644,7 +644,7 @@ struct AIBackendChatService {
 
         throw lastError ?? AIRequestError(
             kind: .unknown,
-            userMessage: "成分识别失败，请稍后重试。",
+            userMessage: "成分识别暂时失败，请再试一次。",
             rawMessage: "No ingredient endpoint candidates available.",
             httpStatus: nil
         )
@@ -706,7 +706,7 @@ struct AIBackendChatService {
         guard let url = URL(string: endpoint) else {
             throw AIRequestError(
                 kind: .client,
-                userMessage: "AI 后端地址无效，请检查配置。",
+                userMessage: "AI 后端地址格式不正确，请检查后再试。",
                 rawMessage: endpoint,
                 httpStatus: nil
             )
@@ -718,7 +718,7 @@ struct AIBackendChatService {
         } catch {
             throw AIRequestError(
                 kind: .client,
-                userMessage: "请求参数编码失败，请稍后重试。",
+                userMessage: "请求参数处理失败，请稍后再试。",
                 rawMessage: error.localizedDescription,
                 httpStatus: nil
             )
@@ -789,7 +789,7 @@ struct AIBackendChatService {
 
             throw AIRequestError(
                 kind: .unknown,
-                userMessage: "请求失败，请稍后重试。",
+                userMessage: "有点小波动，我们稍后再试一次。",
                 rawMessage: "Reached unexpected retry end.",
                 httpStatus: nil
             )
@@ -843,7 +843,7 @@ struct AIBackendChatService {
             guard let http = response as? HTTPURLResponse else {
                 throw AIRequestError(
                     kind: .unknown,
-                    userMessage: "服务响应异常，请稍后重试。",
+                    userMessage: "服务返回异常，请稍后再试。",
                     rawMessage: "Non-HTTP response",
                     httpStatus: nil
                 )
@@ -857,7 +857,7 @@ struct AIBackendChatService {
             guard let output = decodeTextPayload(from: data), !output.isEmpty else {
                 throw AIRequestError(
                     kind: .server,
-                    userMessage: "AI 返回为空，请稍后重试。",
+                    userMessage: "AI 这次没有返回内容，请稍后再试。",
                     rawMessage: "Empty decoded payload",
                     httpStatus: http.statusCode
                 )
@@ -1194,7 +1194,7 @@ struct AIBackendChatService {
 
         throw AIRequestError(
             kind: .server,
-            userMessage: "孕期指南解析失败，请稍后重试。",
+            userMessage: "内容解析失败，请稍后再试。",
             rawMessage: raw,
             httpStatus: nil
         )
@@ -1207,7 +1207,7 @@ struct AIBackendChatService {
         }
         throw AIRequestError(
             kind: .server,
-            userMessage: "报告识别结果解析失败，请重试。",
+            userMessage: "报告识别结果解析失败，请再试一次。",
             rawMessage: raw,
             httpStatus: nil
         )
@@ -1221,7 +1221,7 @@ struct AIBackendChatService {
 
         throw AIRequestError(
             kind: .server,
-            userMessage: "成分识别结果解析失败，请重试。",
+            userMessage: "成分识别结果解析失败，请再试一次。",
             rawMessage: raw,
             httpStatus: nil
         )
@@ -1443,7 +1443,7 @@ struct AIAssistantView: View {
         if config.baseURL.isEmpty {
             throw AIRequestError(
                 kind: .client,
-                userMessage: "AI 服务未配置。请设置 AI_BACKEND_URL。",
+                userMessage: "AI 服务还没配置，请先设置 AI_BACKEND_URL。",
                 rawMessage: "Missing AI_BACKEND_URL",
                 httpStatus: nil
             )

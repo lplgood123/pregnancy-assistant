@@ -463,6 +463,23 @@ struct DailyGuideSnapshot: Codable {
     var updatedAt: Date
 }
 
+struct DailyWarmSnapshot {
+    var dateKey: String
+    var dayIndex: Int
+    var weekText: String
+    var babyChange: String
+    var momChange: String
+}
+
+struct WeeklyWarmSnapshot {
+    var week: Int
+    var babyWeekSummary: String
+    var growthLengthCM: String
+    var growthWeightG: String
+    var growthAnalogy: String
+    var momWeekSummary: String
+}
+
 struct AppState: Codable {
     var profile: Profile
     var medications: [MedicationItem]
@@ -843,6 +860,8 @@ final class PregnancyStore: ObservableObject {
         normalizeArchiveFlagsIfNeeded()
         clearSeededSampleDataIfNeeded()
         normalizeDailyState()
+        // 静态孕天文案采用后台预热，避免阻塞首屏。
+        PregnancyDailyGuideCatalog.shared.preloadIfNeeded()
     }
 
     var todayKey: String {
@@ -1257,17 +1276,29 @@ final class PregnancyStore: ObservableObject {
     }
 
     var gestationalWeekText: String {
-        let pregnancyDays = max(calendar.dateComponents([.day], from: state.profile.lastPeriodDate, to: Date()).day ?? 0, 0)
-        let week = min(pregnancyDays / 7, 42)
-        let day = pregnancyDays % 7
+        let dayIndex = pregnancyDayIndex(for: Date())
+        let week = min(dayIndex / 7, 42)
+        let day = dayIndex % 7
         return "\(week)周+\(day)天"
     }
 
     func gestationalWeekText(for date: Date) -> String {
-        let pregnancyDays = max(calendar.dateComponents([.day], from: state.profile.lastPeriodDate, to: date).day ?? 0, 0)
-        let week = min(pregnancyDays / 7, 42)
-        let day = pregnancyDays % 7
+        let dayIndex = pregnancyDayIndex(for: date)
+        let week = min(dayIndex / 7, 42)
+        let day = dayIndex % 7
         return "\(week)周+\(day)天"
+    }
+
+    func gestationalWeekIndex(for date: Date) -> Int {
+        let dayIndex = pregnancyDayIndex(for: date)
+        return max(0, min(40, dayIndex / 7))
+    }
+
+    func pregnancyDayIndex(for date: Date) -> Int {
+        let start = calendar.startOfDay(for: state.profile.lastPeriodDate)
+        let target = calendar.startOfDay(for: date)
+        let diff = (calendar.dateComponents([.day], from: start, to: target).day ?? 0) + 1
+        return max(1, min(280, diff))
     }
 
     var daysToDueText: String {
@@ -1605,7 +1636,7 @@ final class PregnancyStore: ObservableObject {
         case "update_profile":
             let parsed = parseProfileMetrics(from: action.slots)
             guard parsed.heightCM != nil || parsed.weightKG != nil else {
-                return "没识别到可记录的身高或体重，请说“身高165厘米、体重52.3公斤”。"
+                return "我还没识别到可记录的身高或体重，可以说“身高165厘米、体重52.3公斤”。"
             }
 
             var profile = state.profile
@@ -1676,12 +1707,12 @@ final class PregnancyStore: ObservableObject {
             }
 
             if updatedParts.isEmpty {
-                return "没识别到要修改的提醒时段或时间"
+                return "我还没识别到要修改的提醒时段或时间，你可以说“晚饭后改到19:30”。"
             }
             if changed {
                 saveReminderConfig(config)
             }
-            return "已更新：" + updatedParts.joined(separator: "；")
+            return "已经帮你更新：" + updatedParts.joined(separator: "；")
         default:
             return "暂不支持该操作"
         }
@@ -2784,112 +2815,45 @@ final class PregnancyStore: ObservableObject {
     }
 
     func dailyGuideSnapshot(for date: Date = Date()) -> DailyGuideSnapshot {
+        let warm = dailyWarmSnapshot(for: date)
+        return DailyGuideSnapshot(
+            dateKey: warm.dateKey,
+            weekGuide: warm.weekText,
+            babyChange: warm.babyChange,
+            momChange: warm.momChange,
+            source: .local,
+            updatedAt: Date()
+        )
+    }
+
+    func dailyWarmSnapshot(for date: Date = Date()) -> DailyWarmSnapshot {
         let key = dateKey(for: date)
-        if let cached = state.dailyGuideCache[key] {
-            return cached
-        }
-        return localDailyGuideSnapshot(for: date)
+        let dayIndex = pregnancyDayIndex(for: date)
+        let entry = PregnancyDailyGuideCatalog.shared.dailyEntry(for: dayIndex)
+        return DailyWarmSnapshot(
+            dateKey: key,
+            dayIndex: dayIndex,
+            weekText: entry.weekText,
+            babyChange: entry.babyChange,
+            momChange: entry.momChange
+        )
+    }
+
+    func weeklyWarmSnapshot(for date: Date = Date()) -> WeeklyWarmSnapshot {
+        let week = gestationalWeekIndex(for: date)
+        let entry = PregnancyDailyGuideCatalog.shared.weeklyEntry(for: week)
+        return WeeklyWarmSnapshot(
+            week: week,
+            babyWeekSummary: entry.babyWeekSummary,
+            growthLengthCM: entry.growthLengthCM,
+            growthWeightG: entry.growthWeightG,
+            growthAnalogy: entry.growthAnalogy,
+            momWeekSummary: entry.momWeekSummary
+        )
     }
 
     func saveDailyGuideSnapshot(_ snapshot: DailyGuideSnapshot) {
         state.dailyGuideCache[snapshot.dateKey] = snapshot
-    }
-
-    private func localDailyGuideSnapshot(for date: Date) -> DailyGuideSnapshot {
-        let pregnancyWeek = max(calendar.dateComponents([.day], from: state.profile.lastPeriodDate, to: date).day ?? 0, 0) / 7
-        let weekday = max(calendar.component(.weekday, from: date) - 1, 0)
-
-        let earlyBaby = [
-            "胚胎主要器官在持续发育，规律作息有助于稳定状态。",
-            "神经系统与心血管系统持续形成，按时补充叶酸更重要。",
-            "宝宝发育节奏加快，保持规律饮食和休息。",
-            "胚胎结构继续完善，避免过度劳累和熬夜。",
-            "关键发育期持续进行，尽量减少刺激性饮食。",
-            "胎芽变化明显，保持稳定心情有助于身体适应。",
-            "本周发育重点是器官细化，维持规律生活最重要。"
-        ]
-        let earlyMom = [
-            "你可能会有乏力或嗜睡，白天可安排短暂休息。",
-            "晨起轻微恶心较常见，可少量多餐缓解。",
-            "食欲波动正常，优先保证蛋白质和水分。",
-            "情绪敏感是孕期常见反应，适当放慢节奏。",
-            "若出现明显不适，先休息并及时记录变化。",
-            "保持轻量活动有助于减轻疲惫和压力。",
-            "本周建议继续规律睡眠，避免空腹太久。"
-        ]
-        let midBaby = [
-            "宝宝骨骼和肌肉发育更明显，活动能力逐步增强。",
-            "神经连接持续完善，发育进入更稳定阶段。",
-            "宝宝体型增长更快，营养需求随之提高。",
-            "器官功能进一步成熟，日常节律逐渐建立。",
-            "生长速度上升，按时产检可更好掌握进展。",
-            "宝宝感官发育持续推进，发育节奏整体平稳。",
-            "本周发育重点在体格增长和功能完善。"
-        ]
-        let midMom = [
-            "体力通常较早孕更稳定，建议保持适度运动。",
-            "注意钙和蛋白质摄入，支持中期发育需求。",
-            "若久坐后不适，可分段活动缓解压力。",
-            "体重管理以平稳增长为主，不必追求过快变化。",
-            "坚持规律作息，有助于维持白天精力。",
-            "若出现下肢明显肿胀，建议尽快评估。",
-            "本周建议继续观察睡眠与饮食节奏。"
-        ]
-        let lateBaby = [
-            "宝宝体重持续增加，发育重点转向成熟与储备。",
-            "肺部和神经系统继续完善，逐步为分娩做准备。",
-            "活动空间变小，胎动节律可能更有规律。",
-            "发育进入冲刺阶段，规律复查很关键。",
-            "宝宝脂肪储备增加，体型变化更明显。",
-            "本周重点是功能成熟，注意按计划复诊。",
-            "发育节奏稳定推进，继续关注胎动变化。"
-        ]
-        let lateMom = [
-            "中晚孕阶段更容易疲劳，适当分配活动强度。",
-            "可关注腿部水肿与睡眠质量，必要时及时就诊。",
-            "若夜间不适增多，建议提前规划休息节奏。",
-            "持续记录胎动与不适，有助于复诊沟通。",
-            "饮食以清淡均衡为主，避免过量高盐高糖。",
-            "本周建议减少长时间站立，注意下肢放松。",
-            "若出现持续异常症状，请尽快联系医生。"
-        ]
-
-        let stage: PregnancyStage
-        if pregnancyWeek < 14 {
-            stage = .early
-        } else if pregnancyWeek < 28 {
-            stage = .middle
-        } else {
-            stage = .late
-        }
-
-        let weekGuide: String
-        let babyChange: String
-        let momChange: String
-
-        switch stage {
-        case .early:
-            weekGuide = "本周建议：规律作息、少量多餐、按时补充叶酸。"
-            babyChange = earlyBaby[weekday % earlyBaby.count]
-            momChange = earlyMom[weekday % earlyMom.count]
-        case .middle:
-            weekGuide = "本周建议：稳定运动节奏，关注体重与营养平衡。"
-            babyChange = midBaby[weekday % midBaby.count]
-            momChange = midMom[weekday % midMom.count]
-        case .late:
-            weekGuide = "本周建议：按时复诊，重点关注胎动与休息质量。"
-            babyChange = lateBaby[weekday % lateBaby.count]
-            momChange = lateMom[weekday % lateMom.count]
-        }
-
-        return DailyGuideSnapshot(
-            dateKey: dateKey(for: date),
-            weekGuide: weekGuide,
-            babyChange: babyChange,
-            momChange: momChange,
-            source: .local,
-            updatedAt: Date()
-        )
     }
 
     func nextUpcomingMedication() -> NextMedication? {

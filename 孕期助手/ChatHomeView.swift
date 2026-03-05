@@ -65,23 +65,6 @@ struct ChatHomeView: View {
         }
     }
 
-    private enum GuideDetailKind: String {
-        case weekGuide
-        case babyChange
-        case momChange
-
-        var title: String {
-            switch self {
-            case .weekGuide:
-                return "孕期指南"
-            case .babyChange:
-                return "宝宝变化"
-            case .momChange:
-                return "妈妈变化"
-            }
-        }
-    }
-
     private enum Formatters {
         static let hhmm: DateFormatter = {
             let formatter = DateFormatter()
@@ -151,10 +134,9 @@ struct ChatHomeView: View {
     @State private var isTyping = false
     @State private var typingStageText = "小助手正在思考…"
     @State private var selectedHomeDate = Calendar.current.startOfDay(for: Date())
-    @State private var selectedGuideSnapshot: DailyGuideSnapshot?
+    @State private var selectedGuideSnapshot: DailyWarmSnapshot?
     @State private var showGuideDetailSheet = false
-    @State private var guideDetailKind: GuideDetailKind = .weekGuide
-    @State private var guideRequestToken = UUID()
+    @State private var isTopCardCollapsed = false
     @State private var failedMessageID: String?
     @State private var failedUserInput: String?
     @State private var isRetryingFailedMessage = false
@@ -224,6 +206,7 @@ struct ChatHomeView: View {
                     .simultaneousGesture(
                         DragGesture(minimumDistance: 10).onEnded { value in
                             if value.translation.height < -16 {
+                                isTopCardCollapsed = true
                                 inputFocused = false
                             }
                         }
@@ -245,7 +228,10 @@ struct ChatHomeView: View {
                     .onChange(of: isTyping) { _ in
                         scrollToBottomStable(proxy, animated: true)
                     }
-                    .onChange(of: inputFocused) { _ in
+                    .onChange(of: inputFocused) { focused in
+                        if focused {
+                            isTopCardCollapsed = true
+                        }
                         scrollToBottomStable(proxy, animated: false)
                     }
                     .onChange(of: tabBarVisible) { _ in
@@ -264,6 +250,7 @@ struct ChatHomeView: View {
                         clearLocalSessionState()
                         initializeSessionIfNeeded()
                         selectedHomeDate = Calendar.current.startOfDay(for: Date())
+                        isTopCardCollapsed = false
                         refreshHomeHeader(for: selectedHomeDate)
                         scrollToBottomStable(proxy, animated: false)
                     }
@@ -333,7 +320,7 @@ struct ChatHomeView: View {
             .confirmationDialog("选择图片来源", isPresented: $showImageSourceDialog, titleVisibility: .visible) {
                 Button("拍照") {
                     guard UIImagePickerController.isSourceTypeAvailable(.camera) else {
-                        errorText = "当前设备不支持拍照，请改用相册上传。"
+                        errorText = "当前设备暂不支持拍照，先用相册上传也可以。"
                         return
                     }
                     imageSource = .camera
@@ -455,8 +442,20 @@ struct ChatHomeView: View {
         UIPasteboard.general.string = text
     }
 
-    private var selectedGuide: DailyGuideSnapshot {
-        selectedGuideSnapshot ?? store.dailyGuideSnapshot(for: selectedHomeDate)
+    private var selectedGuide: DailyWarmSnapshot {
+        selectedGuideSnapshot ?? store.dailyWarmSnapshot(for: selectedHomeDate)
+    }
+
+    private var isTodaySelected: Bool {
+        Calendar.current.isDate(selectedHomeDate, inSameDayAs: Date())
+    }
+
+    private var collapsedTopHint: String {
+        let medicalItems = store.todayTimelineItems(scope: .medical, includeCompleted: true, now: selectedHomeDate)
+        if medicalItems.isEmpty {
+            return "今日暂无医疗安排"
+        }
+        return "今日医疗安排 \(medicalItems.count) 项"
     }
 
     private var topFixedInfoBar: some View {
@@ -472,109 +471,176 @@ struct ChatHomeView: View {
                 .font(.system(size: 22, weight: .bold))
                 .foregroundStyle(AppTheme.textPrimary)
 
-            VStack(alignment: .leading, spacing: 10) {
-                HStack(spacing: 6) {
-                    Button {
-                        shiftSelectedHomeDate(by: -1)
-                    } label: {
-                        Image(systemName: "chevron.left")
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(AppTheme.actionPrimary)
-                            .frame(width: 30, height: 30)
-                            .background(Color.white.opacity(0.6))
-                            .clipShape(Circle())
-                    }
-                    .buttonStyle(.plain)
-                    .appTapTarget()
-
-                    Text(topDateTitle)
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(AppTheme.textPrimary)
-                        .frame(maxWidth: .infinity, alignment: .center)
-                        .lineLimit(1)
-
-                    Button {
-                        shiftSelectedHomeDate(by: 1)
-                    } label: {
-                        Image(systemName: "chevron.right")
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(AppTheme.actionPrimary)
-                            .frame(width: 30, height: 30)
-                            .background(Color.white.opacity(0.6))
-                            .clipShape(Circle())
-                    }
-                    .buttonStyle(.plain)
-                    .appTapTarget()
-                }
-                .contentShape(Rectangle())
-                .gesture(
-                    DragGesture(minimumDistance: 15).onEnded { value in
-                        if value.translation.width < -26 {
-                            shiftSelectedHomeDate(by: 1)
-                        } else if value.translation.width > 26 {
-                            shiftSelectedHomeDate(by: -1)
-                        }
-                    }
-                )
-
-                Text(dueDateText)
-                    .font(.footnote)
-                    .foregroundStyle(AppTheme.textSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
-
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(weight.title)
+            if isTopCardCollapsed {
+                HStack(spacing: 8) {
+                    Text("\(topDateTitle) · \(collapsedTopHint)")
                         .font(.footnote.weight(.semibold))
                         .foregroundStyle(AppTheme.textPrimary)
-                    Text(weight.detail)
-                        .font(.caption)
+                        .lineLimit(1)
+
+                    Spacer(minLength: 0)
+
+                    if !isTodaySelected {
+                        Button {
+                            selectedHomeDate = Calendar.current.startOfDay(for: Date())
+                        } label: {
+                            Text("回今天")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(AppTheme.actionPrimary)
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 6)
+                                .background(Color.white.opacity(0.75))
+                                .clipShape(Capsule())
+                        }
+                        .buttonStyle(.plain)
+                        .appTapTarget()
+                    }
+
+                    Image(systemName: "chevron.down")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(AppTheme.textHint)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+                .background(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .fill(
+                            LinearGradient(
+                                colors: [
+                                    Color(hex: "FFE8F2"),
+                                    Color(hex: "FFD8E9")
+                                ],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            )
+                        )
+                )
+            } else {
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack(spacing: 6) {
+                        Button {
+                            shiftSelectedHomeDate(by: -1)
+                        } label: {
+                            Image(systemName: "chevron.left")
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(AppTheme.actionPrimary)
+                                .frame(width: 30, height: 30)
+                                .background(Color.white.opacity(0.6))
+                                .clipShape(Circle())
+                        }
+                        .buttonStyle(.plain)
+                        .appTapTarget()
+
+                        Text(topDateTitle)
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(AppTheme.textPrimary)
+                            .frame(maxWidth: .infinity, alignment: .center)
+                            .lineLimit(1)
+
+                        if !isTodaySelected {
+                            Button {
+                                selectedHomeDate = Calendar.current.startOfDay(for: Date())
+                            } label: {
+                                Text("回今天")
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(AppTheme.actionPrimary)
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 6)
+                                    .background(Color.white.opacity(0.72))
+                                    .clipShape(Capsule())
+                            }
+                            .buttonStyle(.plain)
+                            .appTapTarget()
+                        }
+
+                        Button {
+                            shiftSelectedHomeDate(by: 1)
+                        } label: {
+                            Image(systemName: "chevron.right")
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(AppTheme.actionPrimary)
+                                .frame(width: 30, height: 30)
+                                .background(Color.white.opacity(0.6))
+                                .clipShape(Circle())
+                        }
+                        .buttonStyle(.plain)
+                        .appTapTarget()
+                    }
+                    .contentShape(Rectangle())
+                    .gesture(
+                        DragGesture(minimumDistance: 15).onEnded { value in
+                            if value.translation.width < -26 {
+                                shiftSelectedHomeDate(by: 1)
+                            } else if value.translation.width > 26 {
+                                shiftSelectedHomeDate(by: -1)
+                            }
+                        }
+                    )
+
+                    Text(dueDateText)
+                        .font(.footnote)
+                        .foregroundStyle(AppTheme.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(weight.title)
+                            .font(.footnote.weight(.semibold))
+                            .foregroundStyle(AppTheme.textPrimary)
+                        Text(weight.detail)
+                            .font(.caption)
+                            .foregroundStyle(AppTheme.textSecondary)
+                    }
+
+                    Button {
+                        showGuideDetailSheet = true
+                    } label: {
+                        VStack(alignment: .leading, spacing: 8) {
+                            guideSummaryRow(icon: "figure.and.child.holdinghands", title: "宝宝变化", text: guide.babyChange)
+                            guideSummaryRow(icon: "figure.walk", title: "妈妈变化", text: guide.momChange)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .appTapTarget()
+
+                    Text("当日医疗待办：\(pendingCount) 项")
+                        .font(.caption.weight(.medium))
                         .foregroundStyle(AppTheme.textSecondary)
                 }
-
-                VStack(alignment: .leading, spacing: 8) {
-                    guideSummaryRow(icon: "book.fill", title: "孕期指南", text: guide.weekGuide) {
-                        guideDetailKind = .weekGuide
-                        showGuideDetailSheet = true
-                    }
-                    guideSummaryRow(icon: "figure.and.child.holdinghands", title: "宝宝变化", text: guide.babyChange) {
-                        guideDetailKind = .babyChange
-                        showGuideDetailSheet = true
-                    }
-                    guideSummaryRow(icon: "figure.walk", title: "妈妈变化", text: guide.momChange) {
-                        guideDetailKind = .momChange
-                        showGuideDetailSheet = true
-                    }
-                }
-
-                Text("当日医疗待办：\(pendingCount) 项")
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(AppTheme.textSecondary)
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 12)
-            .background(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .fill(
-                        LinearGradient(
-                            colors: [
-                                Color(hex: "FFE8F2"),
-                                Color(hex: "FFD8E9"),
-                                Color(hex: "FFCFE1")
-                            ],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
+                .padding(.horizontal, 12)
+                .padding(.vertical, 12)
+                .background(
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .fill(
+                            LinearGradient(
+                                colors: [
+                                    Color(hex: "FFE8F2"),
+                                    Color(hex: "FFD8E9"),
+                                    Color(hex: "FFCFE1")
+                                ],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            )
                         )
-                    )
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .stroke(Color.white.opacity(0.7), lineWidth: 1)
-            )
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .stroke(Color.white.opacity(0.7), lineWidth: 1)
+                )
+            }
         }
         .padding(.horizontal)
         .padding(.top, 6)
         .padding(.bottom, 10)
         .background(AppTheme.background.opacity(0.98))
+        .contentShape(Rectangle())
+        .simultaneousGesture(
+            TapGesture().onEnded {
+                inputFocused = false
+                if isTopCardCollapsed {
+                    isTopCardCollapsed = false
+                }
+            }
+        )
         .overlay(alignment: .bottom) {
             Rectangle()
                 .fill(AppTheme.borderLight)
@@ -583,29 +649,54 @@ struct ChatHomeView: View {
     }
 
     private var guideDetailSheet: some View {
-        let guide = selectedGuide
-        let title = guideDetailKind.title
-        let content: String
-        switch guideDetailKind {
-        case .weekGuide:
-            content = guide.weekGuide
-        case .babyChange:
-            content = guide.babyChange
-        case .momChange:
-            content = guide.momChange
-        }
+        let weekGuide = store.weeklyWarmSnapshot(for: selectedHomeDate)
+        let title = "孕\(weekGuide.week)周详情"
 
         return NavigationStack {
             ScrollView {
-                VStack(alignment: .leading, spacing: 12) {
+                VStack(alignment: .leading, spacing: 14) {
                     Text(store.homeDisplayDateText(for: selectedHomeDate))
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(AppTheme.textHint)
 
-                    Text(content)
-                        .font(.body)
-                        .foregroundStyle(AppTheme.textPrimary)
-                        .fixedSize(horizontal: false, vertical: true)
+                    AppCard {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("宝宝本周状况")
+                                .font(.headline)
+                                .foregroundStyle(AppTheme.textPrimary)
+                            Text(weekGuide.babyWeekSummary)
+                                .font(.body)
+                                .foregroundStyle(AppTheme.textSecondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+
+                    AppCard {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("发育数据")
+                                .font(.headline)
+                                .foregroundStyle(AppTheme.textPrimary)
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("身长：\(weekGuide.growthLengthCM)")
+                                Text("体重：\(weekGuide.growthWeightG)")
+                                Text("大小类比：\(weekGuide.growthAnalogy)")
+                            }
+                            .font(.body)
+                            .foregroundStyle(AppTheme.textSecondary)
+                        }
+                    }
+
+                    AppCard {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("妈妈的状况与建议")
+                                .font(.headline)
+                                .foregroundStyle(AppTheme.textPrimary)
+                            Text(weekGuide.momWeekSummary)
+                                .font(.body)
+                                .foregroundStyle(AppTheme.textSecondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
                 }
                 .padding(.horizontal, 16)
                 .padding(.vertical, 16)
@@ -622,35 +713,28 @@ struct ChatHomeView: View {
         }
     }
 
-    private func guideSummaryRow(icon: String, title: String, text: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            HStack(alignment: .top, spacing: 8) {
-                Image(systemName: icon)
+    private func guideSummaryRow(icon: String, title: String, text: String) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: icon)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(AppTheme.actionPrimary)
+                .frame(width: 18, height: 18)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
                     .font(.caption.weight(.semibold))
-                    .foregroundStyle(AppTheme.actionPrimary)
-                    .frame(width: 18, height: 18)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(title)
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(AppTheme.textSecondary)
-                    Text(text)
-                        .font(.footnote)
-                        .foregroundStyle(AppTheme.textPrimary)
-                        .lineLimit(2)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                Spacer(minLength: 0)
-                Image(systemName: "chevron.right")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(AppTheme.textHint)
+                    .foregroundStyle(AppTheme.textSecondary)
+                Text(text)
+                    .font(.footnote)
+                    .foregroundStyle(AppTheme.textPrimary)
+                    .lineLimit(3)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 8)
-            .background(Color.white.opacity(0.55))
-            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            Spacer(minLength: 0)
         }
-        .buttonStyle(.plain)
-        .appTapTarget()
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(Color.white.opacity(0.55))
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
 
     private var analysisBlockingOverlay: some View {
@@ -1071,55 +1155,13 @@ struct ChatHomeView: View {
         showPregnancyPanelDateReview = false
         showGuideDetailSheet = false
         selectedGuideSnapshot = nil
-        guideRequestToken = UUID()
+        isTopCardCollapsed = false
         pendingScrollWorkItem?.cancel()
         pendingScrollWorkItem = nil
     }
 
     private func refreshHomeHeader(for date: Date) {
-        selectedGuideSnapshot = store.dailyGuideSnapshot(for: date)
-        let token = UUID()
-        guideRequestToken = token
-        Task {
-            await requestDailyGuideIfPossible(for: date, token: token)
-        }
-    }
-
-    private func requestDailyGuideIfPossible(for date: Date, token: UUID) async {
-        let config = store.currentAIConfig()
-        guard !config.baseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            return
-        }
-
-        let dateKey = store.dateKey(for: date)
-        do {
-            let response = try await chatService.sendDailyGuide(
-                config: config,
-                date: dateKey,
-                gestationalText: store.gestationalWeekText(for: date),
-                profileContext: store.aiContextSummary(for: date)
-            )
-            let snapshot = DailyGuideSnapshot(
-                dateKey: response.date_key?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
-                    ? (response.date_key ?? dateKey)
-                    : dateKey,
-                weekGuide: response.week_guide.trimmingCharacters(in: .whitespacesAndNewlines),
-                babyChange: response.baby_change.trimmingCharacters(in: .whitespacesAndNewlines),
-                momChange: response.mom_change.trimmingCharacters(in: .whitespacesAndNewlines),
-                source: (response.source ?? "").lowercased() == "ai" ? .ai : .local,
-                updatedAt: Date()
-            )
-
-            await MainActor.run {
-                guard token == guideRequestToken else { return }
-                store.saveDailyGuideSnapshot(snapshot)
-                if store.dateKey(for: selectedHomeDate) == snapshot.dateKey {
-                    selectedGuideSnapshot = snapshot
-                }
-            }
-        } catch {
-            // 使用本地模板兜底，不打断首页主流程。
-        }
+        selectedGuideSnapshot = store.dailyWarmSnapshot(for: date)
     }
 
     private func restorePendingActionIfNeeded() {
@@ -1286,7 +1328,7 @@ struct ChatHomeView: View {
 
         guard !shouldCancel else { return }
         guard !finalTranscript.isEmpty else {
-            errorText = "未识别到语音内容，请重试。"
+            errorText = "这段语音我没听清，我们再试一次。"
             return
         }
 
@@ -1368,7 +1410,7 @@ struct ChatHomeView: View {
             guard !config.baseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                 hideAnalysisOverlay()
                 ocrProcessingState = .failed("AI 服务未配置")
-                errorText = "AI 服务未配置，请先配置后端地址。"
+                errorText = "AI 服务还没配置好，请先补充后端地址。"
                 return
             }
 
@@ -1471,7 +1513,7 @@ struct ChatHomeView: View {
             guard !config.baseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                 hideAnalysisOverlay()
                 ocrProcessingState = .failed("AI 服务未配置")
-                errorText = "AI 服务未配置，请先配置后端地址。"
+                errorText = "AI 服务还没配置好，请先补充后端地址。"
                 return
             }
 
@@ -1600,7 +1642,7 @@ struct ChatHomeView: View {
         guard !pendingPregnancyPanelDrafts.isEmpty else { return }
         let readyDrafts = pendingPregnancyPanelDrafts.filter { $0.checkDate != nil }
         guard !readyDrafts.isEmpty else {
-            errorText = "仍有报告未补全日期，请先完成校对。"
+            errorText = "还有报告日期没补全，先完成校对再保存哦。"
             return
         }
 
@@ -1615,13 +1657,13 @@ struct ChatHomeView: View {
             ]
         }
         guard !records.isEmpty else {
-            errorText = "未生成可保存的检查记录。"
+            errorText = "这次还没生成可保存的检查记录，我们再试一次。"
             return
         }
 
         guard let data = try? JSONSerialization.data(withJSONObject: records, options: []),
               let payload = String(data: data, encoding: .utf8) else {
-            errorText = "组装检查记录失败，请重试。"
+            errorText = "整理检查记录时出了一点问题，请再试一次。"
             return
         }
 

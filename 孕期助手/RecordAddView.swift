@@ -139,7 +139,7 @@ struct RecordAddView: View {
             .confirmationDialog("导入检查报告", isPresented: $showImageSourceDialog, titleVisibility: .visible) {
                 Button("拍照") {
                     guard UIImagePickerController.isSourceTypeAvailable(.camera) else {
-                        errorText = "当前设备不支持拍照，请改用相册上传。"
+                        errorText = "当前设备暂不支持拍照，先用相册上传也可以。"
                         return
                     }
                     imageSource = .camera
@@ -689,7 +689,7 @@ struct RecordAddView: View {
         }
 
         guard !recognizedTextsByImage.isEmpty else {
-            errorText = "图片识别失败，请换一张更清晰的报告图重试。"
+            errorText = "这张图片没识别成功，换一张更清晰的我们再试。"
             return
         }
 
@@ -706,7 +706,7 @@ struct RecordAddView: View {
         resolvedPanels = resolvedPanels.filter { $0.isComplete }
 
         guard !resolvedPanels.isEmpty else {
-            errorText = "未识别到完整妊娠三项，请补传更清晰图片或手动输入。"
+            errorText = "暂时没识别出完整妊娠三项，你可以补传更清晰图片或手动填写。"
             ocrHint = images.count > 1 ? "已完成 \(images.count) 张图片识别。": ""
             return
         }
@@ -912,7 +912,7 @@ struct RecordAddView: View {
             checkDate = date
             ocrHint = "已识别 HCG/孕酮/E2 和报告日期，请核对后保存。"
         } else {
-            ocrHint = "已识别 HCG/孕酮/E2，未识别到报告日期，当前先用今天日期。"
+            ocrHint = "已识别 HCG/孕酮/E2，但报告日期没识别到，当前先按今天保存。"
         }
         checkType = .pregnancyPanel
         pendingBatchRecords = []
