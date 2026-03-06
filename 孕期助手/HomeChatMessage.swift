@@ -9,6 +9,7 @@ struct HomeChatMessage: Identifiable, Codable {
     enum Kind: String, Codable {
         case text
         case cards
+        case image
     }
 
     enum DeliveryStatus: String, Codable {
@@ -20,6 +21,7 @@ struct HomeChatMessage: Identifiable, Codable {
     var role: Role
     var kind: Kind
     var text: String
+    var imagePaths: [String]?
     var createdAt: Date
     var deliveryStatus: DeliveryStatus?
     var deliveryError: String?
@@ -28,6 +30,7 @@ struct HomeChatMessage: Identifiable, Codable {
         role: Role,
         kind: Kind,
         text: String,
+        imagePaths: [String]? = nil,
         createdAt: Date = Date(),
         deliveryStatus: DeliveryStatus? = nil,
         deliveryError: String? = nil
@@ -36,6 +39,7 @@ struct HomeChatMessage: Identifiable, Codable {
         self.role = role
         self.kind = kind
         self.text = text
+        self.imagePaths = imagePaths
         self.createdAt = createdAt
         self.deliveryStatus = deliveryStatus
         self.deliveryError = deliveryError

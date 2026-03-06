@@ -394,15 +394,19 @@ struct ChatHomeView: View {
                             .padding(.leading, 38)
                     } else {
                         UserBubble {
-                            Text(message.text)
-                                .font(.subheadline)
-                                .foregroundStyle(.white)
-                                .textSelection(.enabled)
-                                .contextMenu {
-                                    Button("复制") {
-                                        copyToPasteboard(message.text)
+                            if hasImagePayload(message) {
+                                userImageBubbleContent(message)
+                            } else {
+                                Text(message.text)
+                                    .font(.subheadline)
+                                    .foregroundStyle(.white)
+                                    .textSelection(.enabled)
+                                    .contextMenu {
+                                        Button("复制") {
+                                            copyToPasteboard(message.text)
+                                        }
                                     }
-                                }
+                            }
                         }
                         if message.deliveryStatus == .failed {
                             HStack(spacing: 8) {
@@ -1201,6 +1205,52 @@ struct ChatHomeView: View {
         }
     }
 
+    private func appendPickedImagesToConversation(_ images: [UIImage], mode: HomeImageFlowMode) {
+        let imagePaths = persistPickedImages(images)
+        guard !imagePaths.isEmpty else { return }
+        let text: String
+        switch mode {
+        case .reportImport:
+            text = images.count > 1 ? "上传了\(images.count)张报告图片" : "上传了报告图片"
+        case .ingredientScan:
+            text = images.count > 1 ? "上传了\(images.count)张成分图片" : "上传了成分图片"
+        case .genericOcrChat:
+            text = images.count > 1 ? "上传了\(images.count)张图片" : "上传了图片"
+        }
+        chatMessages.append(
+            HomeChatMessage(
+                role: .user,
+                kind: .image,
+                text: text,
+                imagePaths: imagePaths,
+                deliveryStatus: .sent
+            )
+        )
+        store.saveHomeChatMessages(chatMessages)
+    }
+
+    private func persistPickedImages(_ images: [UIImage]) -> [String] {
+        let fm = FileManager.default
+        guard let baseURL = fm.urls(for: .cachesDirectory, in: .userDomainMask).first else {
+            return []
+        }
+        let folderURL = baseURL.appendingPathComponent("home_chat_images", isDirectory: true)
+        if !fm.fileExists(atPath: folderURL.path) {
+            try? fm.createDirectory(at: folderURL, withIntermediateDirectories: true)
+        }
+        return images.compactMap { image in
+            guard let data = image.jpegData(compressionQuality: 0.75) else { return nil }
+            let filename = "\(UUID().uuidString).jpg"
+            let target = folderURL.appendingPathComponent(filename)
+            do {
+                try data.write(to: target, options: [.atomic])
+                return target.path
+            } catch {
+                return nil
+            }
+        }
+    }
+
     private func refreshHomeHeader(for date: Date) {
         selectedGuideSnapshot = store.dailyWarmSnapshot(for: date)
     }
@@ -1389,6 +1439,7 @@ struct ChatHomeView: View {
         errorText = ""
         pendingImageFailMessages = []
         ocrProcessingState = .processing
+        appendPickedImagesToConversation(validImages, mode: mode)
 
         switch mode {
         case .reportImport:
@@ -1611,7 +1662,7 @@ struct ChatHomeView: View {
         let promptPrefix = userQuestion.isEmpty ? "请根据我上传的图片内容进行解读：" : "\(userQuestion)\n请结合以下图片识别文本回答："
         let prompt = "\(promptPrefix)\n\n\(ocrPayload)"
 
-        await submitUserInput(prompt)
+        await sendUserMessage(prompt, messageID: nil)
         if !failedMessages.isEmpty {
             errorText = "已识别 \(recognizedTexts.count) 张，\(failedMessages.count) 张失败。"
         }
@@ -1861,7 +1912,7 @@ struct ChatHomeView: View {
         await sendUserMessage(sourceInput, messageID: messageID)
     }
 
-    private func sendUserMessage(_ input: String, messageID: String) async {
+    private func sendUserMessage(_ input: String, messageID: String?) async {
         isTyping = true
         typingStageText = stageText(for: .connecting)
         defer {
@@ -1871,11 +1922,16 @@ struct ChatHomeView: View {
 
         let config = store.currentAIConfig()
         guard !config.baseURL.isEmpty else {
-            markMessageFailed(
-                id: messageID,
-                input: input,
-                reason: "AI 服务未配置。请设置 AI_BACKEND_URL。"
-            )
+            if let messageID {
+                markMessageFailed(
+                    id: messageID,
+                    input: input,
+                    reason: "AI 服务未配置。请设置 AI_BACKEND_URL。"
+                )
+            } else {
+                errorText = "AI 服务还没配置好，请先补充后端地址。"
+                chatMessages.append(HomeChatMessage(role: .assistant, kind: .text, text: "我现在还连不上 AI 服务，先检查后端地址后我再继续识别。"))
+            }
             return
         }
 
@@ -1891,17 +1947,24 @@ struct ChatHomeView: View {
             store.appendAIMessage(role: "user", content: input)
             store.appendAIMessage(role: "assistant", content: jsonText)
 
-            markMessageSent(id: messageID)
+            if let messageID {
+                markMessageSent(id: messageID)
+            }
             applyAssistantResponse(jsonText, userInput: input)
 
-            if failedMessageID == messageID {
+            if let messageID, failedMessageID == messageID {
                 failedMessageID = nil
                 failedUserInput = nil
             }
             errorText = ""
         } catch {
             let mapped = AIRequestError.map(error)
-            markMessageFailed(id: messageID, input: input, reason: mapped.userMessage)
+            if let messageID {
+                markMessageFailed(id: messageID, input: input, reason: mapped.userMessage)
+            } else {
+                errorText = mapped.userMessage
+                chatMessages.append(HomeChatMessage(role: .assistant, kind: .text, text: "图片已收到，但这次识别失败了：\(mapped.userMessage)"))
+            }
         }
     }
 
@@ -2042,6 +2105,55 @@ struct ChatHomeView: View {
 
     private func timeLabel(_ date: Date) -> String {
         Self.Formatters.hhmm.string(from: date)
+    }
+
+    private func hasImagePayload(_ message: HomeChatMessage) -> Bool {
+        guard let paths = message.imagePaths else { return false }
+        return !paths.isEmpty
+    }
+
+    @ViewBuilder
+    private func userImageBubbleContent(_ message: HomeChatMessage) -> some View {
+        let paths = message.imagePaths ?? []
+        VStack(alignment: .trailing, spacing: 8) {
+            if !message.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Text(message.text)
+                    .font(.footnote)
+                    .foregroundStyle(.white.opacity(0.95))
+                    .multilineTextAlignment(.trailing)
+            }
+            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 6) {
+                ForEach(paths, id: \.self) { path in
+                    if let image = loadChatImage(path: path) {
+                        Image(uiImage: image)
+                            .resizable()
+                            .scaledToFill()
+                            .frame(width: 112, height: 112)
+                            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    } else {
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .fill(Color.white.opacity(0.2))
+                            .frame(width: 112, height: 112)
+                            .overlay(
+                                Image(systemName: "photo")
+                                    .font(.system(size: 18, weight: .medium))
+                                    .foregroundStyle(Color.white.opacity(0.8))
+                            )
+                    }
+                }
+            }
+            .frame(maxWidth: 230, alignment: .trailing)
+        }
+    }
+
+    private func loadChatImage(path: String) -> UIImage? {
+        if let image = UIImage(contentsOfFile: path) {
+            return image
+        }
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)), !data.isEmpty else {
+            return nil
+        }
+        return UIImage(data: data)
     }
 
     private var visibleMessages: [HomeChatMessage] {
@@ -2837,6 +2949,20 @@ struct ChatSmartCameraSheet: View {
                 .foregroundStyle(.white)
 
             Spacer()
+
+            if camera.isFlashAvailable {
+                Button {
+                    camera.toggleFlash()
+                } label: {
+                    Image(systemName: camera.flashEnabled ? "bolt.fill" : "bolt.slash.fill")
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundStyle(camera.flashEnabled ? Color(hex: "FFD35C") : .white)
+                        .frame(width: 36, height: 36)
+                        .background(Color.black.opacity(0.35))
+                        .clipShape(Circle())
+                }
+                .buttonStyle(.plain)
+            }
         }
         .padding(.horizontal, 16)
         .padding(.top, 14)
@@ -2871,8 +2997,9 @@ struct ChatSmartCameraSheet: View {
     }
 
     private var modeSelector: some View {
-        HStack(spacing: 12) {
-            ForEach(ChatHomeView.HomeImageFlowMode.allCases, id: \.self) { mode in
+        let orderedModes: [ChatHomeView.HomeImageFlowMode] = [.reportImport, .genericOcrChat, .ingredientScan]
+        return HStack(spacing: 12) {
+            ForEach(orderedModes, id: \.self) { mode in
                 let selected = mode == selectedMode
                 Button {
                     selectedMode = mode
@@ -2937,7 +3064,7 @@ struct ChatSmartCameraSheet: View {
     }
 
     private func shiftMode(_ offset: Int) {
-        let modes = ChatHomeView.HomeImageFlowMode.allCases
+        let modes: [ChatHomeView.HomeImageFlowMode] = [.reportImport, .genericOcrChat, .ingredientScan]
         guard let currentIndex = modes.firstIndex(of: selectedMode) else { return }
         let nextIndex = min(max(currentIndex + offset, 0), modes.count - 1)
         selectedMode = modes[nextIndex]
@@ -2948,6 +3075,8 @@ final class ChatCameraCaptureController: NSObject, ObservableObject {
     @Published private(set) var permissionDenied = false
     @Published private(set) var isConfigured = false
     @Published private(set) var canCapture = false
+    @Published private(set) var isFlashAvailable = false
+    @Published private(set) var flashEnabled = false
 
     let session = AVCaptureSession()
 
@@ -2995,11 +3124,16 @@ extension ChatCameraCaptureController {
             }
             self.captureCompletion = completion
             let settings = AVCapturePhotoSettings()
-            if self.photoOutput.supportedFlashModes.contains(.auto) {
-                settings.flashMode = .auto
+            if self.isFlashAvailable {
+                settings.flashMode = self.flashEnabled ? .on : .off
             }
             self.photoOutput.capturePhoto(with: settings, delegate: self)
         }
+    }
+
+    func toggleFlash() {
+        guard isFlashAvailable else { return }
+        flashEnabled.toggle()
     }
 
     private func configureAndStartSession() {
@@ -3029,11 +3163,14 @@ extension ChatCameraCaptureController {
                 }
                 self.session.addOutput(self.photoOutput)
                 self.photoOutput.isHighResolutionCaptureEnabled = true
+                let flashAvailable = self.photoOutput.supportedFlashModes.contains(.on) &&
+                    self.photoOutput.supportedFlashModes.contains(.off)
                 self.session.commitConfiguration()
                 self.didSetup = true
                 DispatchQueue.main.async {
                     self.isConfigured = true
                     self.canCapture = true
+                    self.isFlashAvailable = flashAvailable
                 }
             }
 
