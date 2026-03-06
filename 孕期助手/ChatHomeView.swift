@@ -1,7 +1,10 @@
 import Foundation
+import AVFoundation
+import Combine
 import PhotosUI
 import SwiftUI
 import UIKit
+import UniformTypeIdentifiers
 
 private struct ComposerDockHeightPreferenceKey: PreferenceKey {
     static var defaultValue: CGFloat = 0
@@ -29,26 +32,7 @@ struct ChatHomeView: View {
         case voice
     }
 
-    private enum ImageSource: Identifiable {
-        case camera
-        case library
-
-        var id: Int {
-            switch self {
-            case .camera: return 1
-            case .library: return 2
-            }
-        }
-
-        var sourceType: UIImagePickerController.SourceType {
-            switch self {
-            case .camera: return .camera
-            case .library: return .photoLibrary
-            }
-        }
-    }
-
-    private enum HomeImageFlowMode: String {
+    enum HomeImageFlowMode: String, CaseIterable {
         case reportImport
         case ingredientScan
         case genericOcrChat
@@ -61,6 +45,28 @@ struct ChatHomeView: View {
                 return "成分识别"
             case .genericOcrChat:
                 return "通用识图问答"
+            }
+        }
+
+        var cameraModeTitle: String {
+            switch self {
+            case .reportImport:
+                return "报告"
+            case .ingredientScan:
+                return "成分"
+            case .genericOcrChat:
+                return "拍一下"
+            }
+        }
+
+        var cameraHint: String {
+            switch self {
+            case .reportImport:
+                return "对准报告单拍摄，建议包含日期与三项数值。"
+            case .ingredientScan:
+                return "对准成分表拍摄，尽量拍完整配料文字。"
+            case .genericOcrChat:
+                return "拍下图片后我会先识图，再按你的问题解读。"
             }
         }
     }
@@ -147,10 +153,9 @@ struct ChatHomeView: View {
     @State private var liveVoiceTranscript = ""
     @State private var activeVoiceSessionID: UUID?
     @State private var ocrProcessingState: OCRProcessingState = .idle
-    @State private var showImageFlowDialog = false
-    @State private var showImageSourceDialog = false
-    @State private var imageSource: ImageSource?
+    @State private var showSmartCameraSheet = false
     @State private var showMultiImagePicker = false
+    @State private var showImageFileImporter = false
     @State private var activeImageFlowMode: HomeImageFlowMode = .genericOcrChat
     @State private var analysisOverlay = AnalysisOverlayState()
     @State private var pendingPregnancyPanelDrafts: [PregnancyPanelDraft] = []
@@ -305,38 +310,32 @@ struct ChatHomeView: View {
             } message: {
                 Text(pendingSummary())
             }
-            .confirmationDialog("图片操作", isPresented: $showImageFlowDialog, titleVisibility: .visible) {
-                Button("记录报告单") {
-                    beginImageFlow(.reportImport)
-                }
-                Button("成分识别") {
-                    beginImageFlow(.ingredientScan)
-                }
-                Button("通用识图问答") {
-                    beginImageFlow(.genericOcrChat)
-                }
-                Button("取消", role: .cancel) { }
-            }
-            .confirmationDialog("选择图片来源", isPresented: $showImageSourceDialog, titleVisibility: .visible) {
-                Button("拍照") {
-                    guard UIImagePickerController.isSourceTypeAvailable(.camera) else {
-                        errorText = "当前设备暂不支持拍照，先用相册上传也可以。"
-                        return
+            .fullScreenCover(isPresented: $showSmartCameraSheet) {
+                ChatSmartCameraSheet(
+                    selectedMode: $activeImageFlowMode,
+                    onClose: {
+                        showSmartCameraSheet = false
+                    },
+                    onPickAlbum: {
+                        showSmartCameraSheet = false
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                            showMultiImagePicker = true
+                        }
+                    },
+                    onPickFile: {
+                        showSmartCameraSheet = false
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                            showImageFileImporter = true
+                        }
+                    },
+                    onCapture: { image in
+                        let mode = activeImageFlowMode
+                        showSmartCameraSheet = false
+                        Task {
+                            await processPickedImages([image], mode: mode)
+                        }
                     }
-                    imageSource = .camera
-                }
-                Button("从相册选择") {
-                    showMultiImagePicker = true
-                }
-                Button("取消", role: .cancel) { }
-            }
-            .sheet(item: $imageSource) { source in
-                AppImagePicker(sourceType: source.sourceType) { image in
-                    let mode = activeImageFlowMode
-                    Task {
-                        await processPickedImages([image], mode: mode)
-                    }
-                }
+                )
             }
             .sheet(isPresented: $showMultiImagePicker) {
                 ChatMultiImagePicker(selectionLimit: 0) { images in
@@ -345,6 +344,13 @@ struct ChatHomeView: View {
                         await processPickedImages(images, mode: mode)
                     }
                 }
+            }
+            .fileImporter(
+                isPresented: $showImageFileImporter,
+                allowedContentTypes: [.image],
+                allowsMultipleSelection: true
+            ) { result in
+                handleImageFileImportResult(result)
             }
             .sheet(isPresented: $showPregnancyPanelDateReview) {
                 pregnancyPanelDateReviewSheet
@@ -943,7 +949,7 @@ struct ChatHomeView: View {
 
     private var imageUploadButton: some View {
         Button {
-            showImageFlowDialog = true
+            beginImageFlow(.genericOcrChat)
         } label: {
             Image(systemName: "photo")
                 .font(.system(size: 18, weight: .medium))
@@ -1144,10 +1150,9 @@ struct ChatHomeView: View {
         failedUserInput = nil
         isRetryingFailedMessage = false
         ocrProcessingState = .idle
-        showImageFlowDialog = false
-        showImageSourceDialog = false
-        imageSource = nil
+        showSmartCameraSheet = false
         showMultiImagePicker = false
+        showImageFileImporter = false
         activeImageFlowMode = .genericOcrChat
         analysisOverlay = AnalysisOverlayState()
         pendingPregnancyPanelDrafts = []
@@ -1158,6 +1163,42 @@ struct ChatHomeView: View {
         isTopCardCollapsed = false
         pendingScrollWorkItem?.cancel()
         pendingScrollWorkItem = nil
+    }
+
+    private func handleImageFileImportResult(_ result: Result<[URL], Error>) {
+        switch result {
+        case .failure:
+            errorText = "文件读取失败了，请重试一次。"
+        case .success(let urls):
+            guard !urls.isEmpty else { return }
+            let mode = activeImageFlowMode
+            Task {
+                let images = loadImagesFromFiles(urls)
+                guard !images.isEmpty else {
+                    errorText = "这些文件暂时不是可识别的图片，请换图片文件再试。"
+                    return
+                }
+                await processPickedImages(images, mode: mode)
+            }
+        }
+    }
+
+    private func loadImagesFromFiles(_ urls: [URL]) -> [UIImage] {
+        urls.compactMap { url in
+            let hasAccess = url.startAccessingSecurityScopedResource()
+            defer {
+                if hasAccess {
+                    url.stopAccessingSecurityScopedResource()
+                }
+            }
+            if let image = UIImage(contentsOfFile: url.path) {
+                return image
+            }
+            guard let data = try? Data(contentsOf: url), !data.isEmpty else {
+                return nil
+            }
+            return UIImage(data: data)
+        }
     }
 
     private func refreshHomeHeader(for date: Date) {
@@ -1263,7 +1304,8 @@ struct ChatHomeView: View {
 
     private func beginImageFlow(_ mode: HomeImageFlowMode) {
         activeImageFlowMode = mode
-        showImageSourceDialog = true
+        inputFocused = false
+        showSmartCameraSheet = true
     }
 
     private func beginPressToTalk() {
@@ -2712,6 +2754,333 @@ struct QuickActionChip: View {
                 .stroke(AppTheme.border, lineWidth: 1)
         )
         .clipShape(Capsule())
+    }
+}
+
+struct ChatSmartCameraSheet: View {
+    @Binding var selectedMode: ChatHomeView.HomeImageFlowMode
+    let onClose: () -> Void
+    let onPickAlbum: () -> Void
+    let onPickFile: () -> Void
+    let onCapture: (UIImage) -> Void
+
+    @StateObject private var camera = ChatCameraCaptureController()
+
+    var body: some View {
+        ZStack(alignment: .bottom) {
+            Color.black.ignoresSafeArea()
+
+            Group {
+                if camera.permissionDenied {
+                    VStack(spacing: 12) {
+                        Image(systemName: "camera.fill")
+                            .font(.system(size: 34))
+                            .foregroundStyle(.white.opacity(0.9))
+                        Text("相机权限未开启")
+                            .font(.headline)
+                            .foregroundStyle(.white)
+                        Text("你可以先用相册或文件导入图片继续识别。")
+                            .font(.subheadline)
+                            .foregroundStyle(.white.opacity(0.8))
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .padding(.horizontal, 24)
+                } else if camera.isConfigured {
+                    ChatCameraPreview(session: camera.session)
+                        .ignoresSafeArea()
+                } else {
+                    ProgressView("相机启动中…")
+                        .foregroundStyle(.white)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+            }
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 16).onEnded { value in
+                    guard abs(value.translation.width) > abs(value.translation.height) else { return }
+                    guard abs(value.translation.width) > 28 else { return }
+                    shiftMode(value.translation.width < 0 ? 1 : -1)
+                }
+            )
+
+            VStack(spacing: 0) {
+                topBar
+                Spacer(minLength: 0)
+                bottomPanel
+            }
+        }
+        .statusBarHidden(true)
+        .onAppear {
+            camera.start()
+        }
+        .onDisappear {
+            camera.stop()
+        }
+    }
+
+    private var topBar: some View {
+        HStack(spacing: 12) {
+            Button {
+                onClose()
+            } label: {
+                Image(systemName: "chevron.left")
+                    .font(.system(size: 20, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .frame(width: 36, height: 36)
+                    .background(Color.black.opacity(0.35))
+                    .clipShape(Circle())
+            }
+            .buttonStyle(.plain)
+
+            Text("AI 智能相机")
+                .font(.system(size: 28, weight: .bold))
+                .foregroundStyle(.white)
+
+            Spacer()
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 14)
+    }
+
+    private var bottomPanel: some View {
+        VStack(spacing: 14) {
+            modeSelector
+
+            Text(selectedMode.cameraHint)
+                .font(.footnote)
+                .foregroundStyle(AppTheme.textSecondary)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 18)
+                .fixedSize(horizontal: false, vertical: true)
+
+            HStack(alignment: .bottom, spacing: 36) {
+                actionButton(icon: "photo.on.rectangle.angled", title: "相册", action: onPickAlbum)
+                captureButton
+                actionButton(icon: "doc", title: "文件", action: onPickFile)
+            }
+            .padding(.top, 4)
+            .padding(.bottom, 12)
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 12)
+        .background(
+            RoundedRectangle(cornerRadius: 30, style: .continuous)
+                .fill(Color.white)
+                .ignoresSafeArea(edges: .bottom)
+        )
+    }
+
+    private var modeSelector: some View {
+        HStack(spacing: 12) {
+            ForEach(ChatHomeView.HomeImageFlowMode.allCases, id: \.self) { mode in
+                let selected = mode == selectedMode
+                Button {
+                    selectedMode = mode
+                } label: {
+                    Text(mode.cameraModeTitle)
+                        .font(.system(size: 18, weight: selected ? .semibold : .regular))
+                        .foregroundStyle(selected ? AppTheme.actionPrimary : AppTheme.textSecondary)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 10)
+                        .background(
+                            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                .fill(selected ? AppTheme.accentSoft : Color.clear)
+                        )
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
+    private var captureButton: some View {
+        Button {
+            camera.capturePhoto { image in
+                guard let image else { return }
+                onCapture(image)
+            }
+        } label: {
+            ZStack {
+                Circle()
+                    .stroke(AppTheme.actionPrimary.opacity(0.25), lineWidth: 8)
+                    .frame(width: 88, height: 88)
+                Circle()
+                    .fill(
+                        LinearGradient(
+                            colors: [AppTheme.actionPrimary, AppTheme.accentBrand],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+                    .frame(width: 66, height: 66)
+            }
+        }
+        .buttonStyle(.plain)
+        .disabled(!camera.canCapture)
+        .opacity(camera.canCapture ? 1 : 0.55)
+    }
+
+    private func actionButton(icon: String, title: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            VStack(spacing: 8) {
+                Image(systemName: icon)
+                    .font(.system(size: 20, weight: .medium))
+                    .foregroundStyle(Color(hex: "1F2559"))
+                    .frame(width: 44, height: 44)
+                    .background(Color(hex: "EEF0FF"))
+                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                Text(title)
+                    .font(.system(size: 17))
+                    .foregroundStyle(Color(hex: "1F2559"))
+            }
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func shiftMode(_ offset: Int) {
+        let modes = ChatHomeView.HomeImageFlowMode.allCases
+        guard let currentIndex = modes.firstIndex(of: selectedMode) else { return }
+        let nextIndex = min(max(currentIndex + offset, 0), modes.count - 1)
+        selectedMode = modes[nextIndex]
+    }
+}
+
+final class ChatCameraCaptureController: NSObject, ObservableObject {
+    @Published private(set) var permissionDenied = false
+    @Published private(set) var isConfigured = false
+    @Published private(set) var canCapture = false
+
+    let session = AVCaptureSession()
+
+    private let sessionQueue = DispatchQueue(label: "chat.smart.camera.session")
+    private let photoOutput = AVCapturePhotoOutput()
+    private var didSetup = false
+    private var captureCompletion: ((UIImage?) -> Void)?
+}
+
+extension ChatCameraCaptureController {
+    func start() {
+        switch AVCaptureDevice.authorizationStatus(for: .video) {
+        case .authorized:
+            configureAndStartSession()
+        case .notDetermined:
+            AVCaptureDevice.requestAccess(for: .video) { [weak self] granted in
+                guard let self else { return }
+                DispatchQueue.main.async {
+                    self.permissionDenied = !granted
+                }
+                guard granted else { return }
+                self.configureAndStartSession()
+            }
+        default:
+            permissionDenied = true
+        }
+    }
+
+    func stop() {
+        sessionQueue.async { [weak self] in
+            guard let self else { return }
+            guard self.session.isRunning else { return }
+            self.session.stopRunning()
+        }
+    }
+
+    func capturePhoto(completion: @escaping (UIImage?) -> Void) {
+        sessionQueue.async { [weak self] in
+            guard let self else { return }
+            guard self.didSetup else {
+                DispatchQueue.main.async {
+                    completion(nil)
+                }
+                return
+            }
+            self.captureCompletion = completion
+            let settings = AVCapturePhotoSettings()
+            if self.photoOutput.supportedFlashModes.contains(.auto) {
+                settings.flashMode = .auto
+            }
+            self.photoOutput.capturePhoto(with: settings, delegate: self)
+        }
+    }
+
+    private func configureAndStartSession() {
+        sessionQueue.async { [weak self] in
+            guard let self else { return }
+            if !self.didSetup {
+                self.session.beginConfiguration()
+                self.session.sessionPreset = .photo
+
+                guard let camera = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back),
+                      let input = try? AVCaptureDeviceInput(device: camera),
+                      self.session.canAddInput(input) else {
+                    self.session.commitConfiguration()
+                    DispatchQueue.main.async {
+                        self.permissionDenied = true
+                    }
+                    return
+                }
+                self.session.addInput(input)
+
+                guard self.session.canAddOutput(self.photoOutput) else {
+                    self.session.commitConfiguration()
+                    DispatchQueue.main.async {
+                        self.permissionDenied = true
+                    }
+                    return
+                }
+                self.session.addOutput(self.photoOutput)
+                self.photoOutput.isHighResolutionCaptureEnabled = true
+                self.session.commitConfiguration()
+                self.didSetup = true
+                DispatchQueue.main.async {
+                    self.isConfigured = true
+                    self.canCapture = true
+                }
+            }
+
+            guard !self.session.isRunning else { return }
+            self.session.startRunning()
+        }
+    }
+}
+
+extension ChatCameraCaptureController: AVCapturePhotoCaptureDelegate {
+    func photoOutput(
+        _ output: AVCapturePhotoOutput,
+        didFinishProcessingPhoto photo: AVCapturePhoto,
+        error: Error?
+    ) {
+        let completion = captureCompletion
+        captureCompletion = nil
+
+        guard error == nil, let data = photo.fileDataRepresentation(), let image = UIImage(data: data) else {
+            DispatchQueue.main.async {
+                completion?(nil)
+            }
+            return
+        }
+        DispatchQueue.main.async {
+            completion?(image)
+        }
+    }
+}
+
+struct ChatCameraPreview: UIViewRepresentable {
+    let session: AVCaptureSession
+
+    func makeUIView(context: Context) -> PreviewView {
+        let view = PreviewView()
+        view.previewLayer.session = session
+        view.previewLayer.videoGravity = .resizeAspectFill
+        return view
+    }
+
+    func updateUIView(_ uiView: PreviewView, context: Context) {
+        uiView.previewLayer.session = session
+    }
+
+    final class PreviewView: UIView {
+        override class var layerClass: AnyClass { AVCaptureVideoPreviewLayer.self }
+        var previewLayer: AVCaptureVideoPreviewLayer { layer as! AVCaptureVideoPreviewLayer }
     }
 }
 
