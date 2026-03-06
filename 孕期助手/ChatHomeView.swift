@@ -1256,14 +1256,6 @@ struct ChatHomeView: View {
             return
         }
 
-        if command.title == "记录报告单" {
-            let guidePrompt = "我想记录报告单，请引导我上传检查报告图片或手动填写。"
-            Task {
-                await submitUserInput(guidePrompt)
-            }
-            return
-        }
-
         Task {
             await submitUserInput(prompt)
         }
